@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Codex Widget
+Comment=Floating desktop widget for Codex usage limits
+Exec=/home/fabio/projetos/codex-widget/.venv/bin/codex-widget %u
+Terminal=false
+Icon=/home/fabio/projetos/codex-widget/assets/codex_logo.png
+Categories=Utility;

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-widget"
+version = "0.1.0"
+description = "Floating desktop widget for Codex usage windows"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.6",
+]
+
+[project.scripts]
+codex-widget = "codex_widget.main:main"
+codex-usage-widget = "codex_widget.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
