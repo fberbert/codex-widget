@@ -11,6 +11,10 @@ Codex Widget is a small floating desktop widget for monitoring your current Code
 
 The widget stays on top of the desktop, can be dragged anywhere, and supports compact horizontal or vertical layouts.
 
+<p align="center">
+  <img src="assets/codex-widget-screenshot.png" alt="Codex Widget running on the desktop">
+</p>
+
 > [!IMPORTANT]
 > Codex Widget reads your local Codex authentication file and uses an internal ChatGPT endpoint. Treat `~/.codex/auth.json` as a secret. Do not commit it, log it, or share it.
 
