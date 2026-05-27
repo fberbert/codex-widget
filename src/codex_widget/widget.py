@@ -6,10 +6,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from .usage import (
     CodexUsageError,
-    extract_access_token,
-    extract_account_id,
-    fetch_usage,
-    load_auth,
+    fetch_usage_with_auth_refresh,
     parse_usage_payload,
 )
 
@@ -314,10 +311,7 @@ class UsageFetchWorker(QtCore.QObject):
     @QtCore.pyqtSlot()
     def run(self) -> None:
         try:
-            auth = load_auth(self._auth_file)
-            access_token = extract_access_token(auth)
-            account_id = extract_account_id(auth)
-            payload = fetch_usage(access_token, account_id, self._base_url, timeout=20.0)
+            payload = fetch_usage_with_auth_refresh(self._auth_file, self._base_url, timeout=20.0)
             usage = parse_usage_payload(payload)
             self.loaded.emit(build_card_models(five_hour=usage.five_hour, weekly=usage.weekly))
         except CodexUsageError as exc:

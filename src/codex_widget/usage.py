@@ -4,13 +4,18 @@ import base64
 import json
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 DEFAULT_AUTH_FILE = Path.home() / ".codex" / "auth.json"
 DEFAULT_BASE_URL = "https://chatgpt.com/backend-api"
+DEFAULT_AUTH_BASE_URL = "https://auth.openai.com"
+OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+OAUTH_SCOPE = "openid profile email offline_access"
 
 
 class CodexUsageError(RuntimeError):
@@ -108,6 +113,92 @@ def fetch_usage(access_token: str, account_id: str, base_url: str, timeout: floa
     return data
 
 
+def fetch_usage_with_auth_refresh(auth_file: Path, base_url: str, timeout: float) -> dict[str, Any]:
+    auth = load_auth(auth_file)
+    try:
+        return fetch_usage(
+            extract_access_token(auth),
+            extract_account_id(auth),
+            base_url,
+            timeout,
+        )
+    except CodexUsageError as exc:
+        if not _is_auth_failure(exc):
+            raise
+
+    refreshed_auth = refresh_auth(auth, auth_file=auth_file, timeout=timeout)
+    return fetch_usage(
+        extract_access_token(refreshed_auth),
+        extract_account_id(refreshed_auth),
+        base_url,
+        timeout,
+    )
+
+
+def refresh_auth(
+    auth: dict[str, Any],
+    *,
+    auth_file: Path,
+    timeout: float,
+    auth_base_url: str = DEFAULT_AUTH_BASE_URL,
+) -> dict[str, Any]:
+    tokens = auth.get("tokens")
+    refresh_token = tokens.get("refresh_token") if isinstance(tokens, dict) else None
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise CodexUsageError("Usage request was unauthorized and auth.json has no refresh_token")
+
+    payload = urlencode(
+        {
+            "grant_type": "refresh_token",
+            "client_id": OAUTH_CLIENT_ID,
+            "refresh_token": refresh_token.strip(),
+            "scope": OAUTH_SCOPE,
+        }
+    ).encode("utf-8")
+    request = Request(
+        f"{auth_base_url.rstrip('/')}/oauth/token",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except HTTPError as exc:
+        detail = _safe_error_body(exc)
+        raise CodexUsageError(f"Auth refresh failed with HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise CodexUsageError(f"Network error while refreshing auth: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise CodexUsageError("Timed out while refreshing auth") from exc
+
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CodexUsageError("Auth refresh response is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise CodexUsageError("Auth refresh response does not contain a JSON object")
+
+    access_token = _token_value(data, "access_token", "accessToken")
+    next_refresh_token = _token_value(data, "refresh_token", "refreshToken") or refresh_token.strip()
+    id_token = _token_value(data, "id_token", "idToken")
+    if not access_token or not id_token:
+        raise CodexUsageError("Auth refresh response did not include required tokens")
+
+    next_auth = dict(auth)
+    next_tokens = dict(tokens) if isinstance(tokens, dict) else {}
+    next_tokens["access_token"] = access_token
+    next_tokens["refresh_token"] = next_refresh_token
+    next_tokens["id_token"] = id_token
+    account_id = _account_id_from_id_token(id_token)
+    if account_id:
+        next_tokens["account_id"] = account_id
+    next_auth["tokens"] = next_tokens
+    next_auth["last_refresh"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    _write_auth(auth_file, next_auth)
+    return next_auth
+
+
 def parse_usage_payload(payload: dict[str, Any], now: int | None = None) -> CodexUsage:
     now_epoch = int(time.time()) if now is None else now
     rate_limit = payload.get("rate_limit")
@@ -168,6 +259,26 @@ def _safe_error_body(exc: HTTPError) -> str:
     if not raw:
         return exc.reason or "error without details"
     return raw[:500]
+
+
+def _is_auth_failure(exc: CodexUsageError) -> bool:
+    return str(exc).startswith("HTTP 401 ") or str(exc).startswith("HTTP 403 ")
+
+
+def _token_value(data: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _write_auth(path: Path, auth: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(json.dumps(auth, indent=2), encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(path)
 
 
 def _parse_window(raw: Any, now: int) -> UsageWindow | None:

@@ -40,6 +40,7 @@ From that file it extracts:
 
 - `tokens.access_token` or `tokens.accessToken`
 - `tokens.account_id`, `tokens.accountId`, or the `chatgpt_account_id` claim inside `tokens.id_token`
+- `tokens.refresh_token` when the access token needs to be refreshed after an authentication failure
 
 It then calls:
 
