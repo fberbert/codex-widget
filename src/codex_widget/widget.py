@@ -40,8 +40,7 @@ from .ui_state import (
 
 from .view_model import (
     MetricCardModel,
-    UsageCardModel,
-    build_card_models,
+    build_codex_card,
     build_claude_card,
     build_deepseek_card,
     build_mimo_card,
@@ -116,14 +115,25 @@ class CodexUsageWidget(QtWidgets.QWidget):
             if ui_state.offset_x is not None and ui_state.offset_y is not None
             else None
         )
-        self._codex_models: tuple[UsageCardModel, ...] = ()
+        self._codex_model: MetricCardModel | None = None
         self._deepseek_model: MetricCardModel | None = None
         self._mimo_model: MetricCardModel | None = None
         self._claude_model: MetricCardModel | None = None
         self._openai_model: MetricCardModel | None = None
 
-        self._cards: tuple[UsageCard, ...] = ()
         self._layout = QtWidgets.QHBoxLayout(self)
+        self._codex_card = MetricCard(
+            title="Codex",
+            primary_label="Janela de 5 horas",
+            secondary_label="Janela semanal",
+            parent=self,
+        )
+        self._claude_card = MetricCard(
+            title="Claude Code",
+            primary_label="Janela de 5 horas",
+            secondary_label="Janela semanal",
+            parent=self,
+        )
         self._deepseek_card = MetricCard(
             title="DeepSeek",
             primary_label="Saldo",
@@ -136,26 +146,15 @@ class CodexUsageWidget(QtWidgets.QWidget):
             secondary_label="Gasto total",
             parent=self,
         )
-        self._claude_card = MetricCard(
-            title="Claude Code",
-            primary_label="Janela de 5 horas",
-            secondary_label="Janela semanal",
-            parent=self,
-        )
-        self._layout.addWidget(self._deepseek_card)
-        self._layout.addWidget(self._mimo_card)
-        self._layout.addWidget(self._claude_card)
         self._openai_card = MetricCard(
             title="OpenAI",
             primary_label="Gasto no mês",
             secondary_label="Gasto hoje",
             parent=self,
         )
-        self._layout.addWidget(self._openai_card)
-        self._deepseek_card.set_loading()
-        self._mimo_card.set_loading()
-        self._claude_card.set_loading()
-        self._openai_card.set_loading()
+        for card in self._metric_cards():
+            self._layout.addWidget(card)
+            card.set_loading()
 
         self._badge = CollapsedBadge(parent=self)
         self._layout.addWidget(self._badge)
@@ -169,17 +168,6 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._toggle_button.setObjectName("toggle")
         self._toggle_button.clicked.connect(self._toggle_collapsed)
         self._update_toggle_button()
-
-        self._rebuild_cards(
-            (
-                UsageCardModel(
-                    title="Limite de uso semanal",
-                    percent_remaining=0,
-                    reset_text="",
-                ),
-            )
-        )
-        self._cards[0].set_loading("Limite de uso semanal")
 
         self.setWindowTitle("Codex Usage")
         self.setWindowFlags(
@@ -279,22 +267,14 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._thread.start()
 
     @QtCore.pyqtSlot(object)
-    def _handle_usage_loaded(self, models: tuple[UsageCardModel, ...]) -> None:
-        self._codex_models = models
-        if len(models) != len(self._cards):
-            self._rebuild_cards(models)
-            self._refit_if_needed()
-            self._update_badge()
-            return
-        for card, model in zip(self._cards, models):
-            card.set_model(model)
-        self._apply_scale()
-        self._refit_if_needed()
+    def _handle_usage_loaded(self, model: MetricCardModel) -> None:
+        self._codex_model = model
+        self._codex_card.set_model(model)
         self._update_badge()
 
     @QtCore.pyqtSlot(str)
     def _handle_usage_failed(self, message: str) -> None:
-        self._show_error(message)
+        self._codex_card.set_error(message)
 
     @QtCore.pyqtSlot(object)
     def _handle_deepseek_loaded(self, model: MetricCardModel) -> None:
@@ -334,29 +314,6 @@ class CodexUsageWidget(QtWidgets.QWidget):
     @QtCore.pyqtSlot(str)
     def _handle_openai_failed(self, message: str) -> None:
         self._openai_card.set_error(message)
-
-    def _show_error(self, message: str) -> None:
-        self._drop_cards()
-        card = UsageCard(parent=self)
-        self._cards = (card,)
-        self._layout.addWidget(card)
-        card.set_error("Limites do Codex", message)
-        self._apply_scale()
-
-    def _rebuild_cards(self, models: tuple[UsageCardModel, ...]) -> None:
-        self._drop_cards()
-        cards = tuple(UsageCard(parent=self) for _ in models)
-        self._cards = cards
-        for index, (card, model) in enumerate(zip(cards, models)):
-            self._layout.insertWidget(index, card)
-            card.set_model(model)
-        self._apply_scale()
-
-    def _drop_cards(self) -> None:
-        for card in self._cards:
-            self._layout.removeWidget(card)
-            card.deleteLater()
-        self._cards = ()
 
     def _increase_scale(self) -> None:
         self._change_scale(SCALE_STEP)
@@ -463,7 +420,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
         screen = QtWidgets.QApplication.primaryScreen()
         if screen is None:
             return True
-        card_count = len(self._cards) + 4
+        card_count = len(self._metric_cards())
         needed = (498 * card_count + 20 * (card_count - 1) + 32) * self._scale
         if self._orientation_locked:
             return True
@@ -503,13 +460,23 @@ class CodexUsageWidget(QtWidgets.QWidget):
         for card in self._metric_cards():
             card.apply_scale(self._scale)
             card.show()
-        card_count = len(self._cards) + 4
+        card_count = len(self._metric_cards())
         if horizontal:
-            width = int(round((498 * card_count + 20 * (card_count - 1) + 32) * self._scale))
-            height = int(round(226 * self._scale))
+            width = int(
+                round(
+                    (MetricCard.MIN_WIDTH * card_count + 20 * (card_count - 1) + 32)
+                    * self._scale
+                )
+            )
+            height = int(round((MetricCard.MIN_HEIGHT + 20) * self._scale))
         else:
-            width = int(round((498 + 32) * self._scale))
-            height = int(round((206 * card_count + 20 * (card_count - 1) + 20) * self._scale))
+            width = int(round((MetricCard.MIN_WIDTH + 32) * self._scale))
+            height = int(
+                round(
+                    (MetricCard.MIN_HEIGHT * card_count + 20 * (card_count - 1) + 20)
+                    * self._scale
+                )
+            )
         self.setMinimumSize(width, height)
         self.resize(width, height)
         self.adjustSize()
@@ -545,7 +512,11 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._toggle_button.raise_()
 
     def _update_badge(self) -> None:
-        codex = f"{self._codex_models[0].percent_remaining}%" if self._codex_models else "—"
+        codex = (
+            self._codex_model.primary_value.replace(" restantes", "")
+            if self._codex_model is not None
+            else "—"
+        )
         claude = (
             self._claude_model.primary_value.replace(" restantes", "")
             if self._claude_model is not None
@@ -591,12 +562,12 @@ class CodexUsageWidget(QtWidgets.QWidget):
             self._retired_threads.remove(thread)
             thread.deleteLater()
 
-    def _metric_cards(self) -> tuple[QtWidgets.QFrame, ...]:
+    def _metric_cards(self) -> tuple[MetricCard, ...]:
         return (
-            *self._cards,
+            self._codex_card,
+            self._claude_card,
             self._deepseek_card,
             self._mimo_card,
-            self._claude_card,
             self._openai_card,
         )
 
@@ -781,126 +752,10 @@ class CollapsedBadge(QtWidgets.QFrame):
         super().mouseReleaseEvent(event)
 
 
-class UsageCard(QtWidgets.QFrame):
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        super().__init__(parent)
-        self._scale = 1.0
-        self._model: UsageCardModel | None = None
-        self._title = QtWidgets.QLabel()
-        self._percent = QtWidgets.QLabel()
-        self._reset = QtWidgets.QLabel()
-        self._bar = QtWidgets.QProgressBar()
-
-        self._title.setObjectName("title")
-        self._percent.setObjectName("percent")
-        self._reset.setObjectName("reset")
-        self._bar.setRange(0, 100)
-        self._bar.setTextVisible(False)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self._title)
-        layout.addWidget(self._percent)
-        layout.addSpacing(2)
-        layout.addWidget(self._bar)
-        layout.addStretch(1)
-        layout.addWidget(self._reset)
-
-        self.apply_scale(1.0)
-
-    def apply_scale(self, scale: float) -> None:
-        self._scale = scale
-        layout = self.layout()
-        if isinstance(layout, QtWidgets.QVBoxLayout):
-            layout.setContentsMargins(
-                int(round(32 * scale)),
-                int(round(28 * scale)),
-                int(round(32 * scale)),
-                int(round(28 * scale)),
-            )
-            layout.setSpacing(int(round(18 * scale)))
-        self._bar.setFixedHeight(int(round(15 * scale)))
-        self.setMinimumSize(int(round(498 * scale)), int(round(206 * scale)))
-        if self._model is not None:
-            self._set_percent_text(self._model.percent_remaining)
-        self._apply_style()
-
-    def set_model(self, model: UsageCardModel) -> None:
-        self._model = model
-        self._title.setText(model.title)
-        self._set_percent_text(model.percent_remaining)
-        self._bar.setValue(model.percent_remaining)
-        self._reset.setText(model.reset_text)
-        self._apply_style()
-
-    def set_loading(self, title: str) -> None:
-        self._model = None
-        self._title.setText(title)
-        self._percent.setText("—")
-        self._bar.setValue(0)
-        self._reset.setText("Atualizando…")
-        self._apply_style()
-
-    def set_error(self, title: str, message: str) -> None:
-        self._title.setText(title)
-        self._percent.setText("Uso indisponível")
-        self._bar.setValue(0)
-        self._reset.setText(message[:96])
-        self._apply_style()
-
-    def _set_percent_text(self, percent_remaining: int) -> None:
-        percent_size = int(round(31 * self._scale))
-        self._percent.setText(
-            f'<span style="font-size: {percent_size}px; font-weight: 800;">'
-            f"{percent_remaining}%</span> restantes"
-        )
-
-    def _apply_style(self) -> None:
-        radius = int(round(28 * self._scale))
-        title_size = int(round(18 * self._scale))
-        percent_size = int(round(22 * self._scale))
-        reset_size = int(round(15 * self._scale))
-        bar_radius = max(1, int(round(7 * self._scale)))
-        self.setStyleSheet(
-            f"""
-            QFrame {{
-                background-color: #222222;
-                border: 1px solid #333333;
-                border-radius: {radius}px;
-            }}
-            QLabel {{
-                background: transparent;
-                border: none;
-                color: #d6dbe4;
-                font-family: Inter, "Segoe UI", Arial, sans-serif;
-            }}
-            QLabel#title {{
-                font-size: {title_size}px;
-                font-weight: 650;
-            }}
-            QLabel#percent {{
-                color: #ffffff;
-                font-size: {percent_size}px;
-                font-weight: 500;
-            }}
-            QLabel#reset {{
-                color: #bcc6d5;
-                font-size: {reset_size}px;
-                font-weight: 500;
-            }}
-            QProgressBar {{
-                background-color: #e7ebf2;
-                border: none;
-                border-radius: {bar_radius}px;
-            }}
-            QProgressBar::chunk {{
-                background-color: #22c55e;
-                border-radius: {bar_radius}px;
-            }}
-            """
-        )
-
-
 class MetricCard(QtWidgets.QFrame):
+    MIN_WIDTH = 498
+    MIN_HEIGHT = 228
+
     def __init__(
         self,
         *,
@@ -920,6 +775,8 @@ class MetricCard(QtWidgets.QFrame):
         self._primary_value = QtWidgets.QLabel("—")
         self._secondary_caption = QtWidgets.QLabel(secondary_label)
         self._secondary_value = QtWidgets.QLabel("—")
+        self._primary_bar = QtWidgets.QProgressBar()
+        self._secondary_bar = QtWidgets.QProgressBar()
         self._detail = QtWidgets.QLabel()
         self._footnote = QtWidgets.QLabel()
 
@@ -929,6 +786,11 @@ class MetricCard(QtWidgets.QFrame):
             caption.setObjectName("caption")
         for value in (self._primary_value, self._secondary_value):
             value.setObjectName("metric")
+        for bar in (self._primary_bar, self._secondary_bar):
+            bar.setObjectName("bar")
+            bar.setRange(0, 100)
+            bar.setTextVisible(False)
+            bar.hide()
         self._detail.setObjectName("detail")
         self._footnote.setObjectName("footnote")
         self._detail.setWordWrap(True)
@@ -940,14 +802,15 @@ class MetricCard(QtWidgets.QFrame):
         header.addWidget(self._status)
 
         metrics = QtWidgets.QHBoxLayout()
-        for caption, value in (
-            (self._primary_caption, self._primary_value),
-            (self._secondary_caption, self._secondary_value),
+        for caption, value, bar in (
+            (self._primary_caption, self._primary_value, self._primary_bar),
+            (self._secondary_caption, self._secondary_value, self._secondary_bar),
         ):
             column = QtWidgets.QVBoxLayout()
             column.setSpacing(2)
             column.addWidget(caption)
             column.addWidget(value)
+            column.addWidget(bar)
             metrics.addLayout(column, 1)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -971,7 +834,12 @@ class MetricCard(QtWidgets.QFrame):
                 int(round(24 * scale)),
             )
             layout.setSpacing(int(round(10 * scale)))
-        self.setMinimumSize(int(round(498 * scale)), int(round(206 * scale)))
+        for bar in (self._primary_bar, self._secondary_bar):
+            bar.setFixedHeight(max(6, int(round(12 * scale))))
+        self.setMinimumSize(
+            int(round(MetricCard.MIN_WIDTH * scale)),
+            int(round(MetricCard.MIN_HEIGHT * scale)),
+        )
         self._apply_style()
 
     def set_model(self, model: MetricCardModel) -> None:
@@ -980,32 +848,41 @@ class MetricCard(QtWidgets.QFrame):
         self._primary_value.setText(model.primary_value)
         self._secondary_caption.setText(model.secondary_label)
         self._secondary_value.setText(model.secondary_value)
+        self._set_percent(self._primary_bar, model.primary_percent)
+        self._set_percent(self._secondary_bar, model.secondary_percent)
         self._detail.setText(model.detail_text)
         self._footnote.setText(model.footnote)
         self._set_status(model.available)
         self._apply_style()
 
     def set_loading(self) -> None:
-        self._title.setText(self._default_title)
-        self._primary_caption.setText(self._default_primary_label)
-        self._secondary_caption.setText(self._default_secondary_label)
-        self._primary_value.setText("—")
-        self._secondary_value.setText("—")
-        self._detail.setText("")
+        self._reset_defaults()
         self._footnote.setText("Atualizando…")
         self._status.setText("")
         self._apply_style()
 
     def set_error(self, message: str) -> None:
+        self._reset_defaults()
+        self._footnote.setText(message[:120])
+        self._set_status(False)
+        self._apply_style()
+
+    def _reset_defaults(self) -> None:
         self._title.setText(self._default_title)
         self._primary_caption.setText(self._default_primary_label)
         self._secondary_caption.setText(self._default_secondary_label)
         self._primary_value.setText("—")
         self._secondary_value.setText("—")
+        self._set_percent(self._primary_bar, None)
+        self._set_percent(self._secondary_bar, None)
         self._detail.setText("")
-        self._footnote.setText(message[:120])
-        self._set_status(False)
-        self._apply_style()
+
+    def _set_percent(self, bar: QtWidgets.QProgressBar, percent: int | None) -> None:
+        if percent is None:
+            bar.hide()
+            return
+        bar.setValue(percent)
+        bar.show()
 
     def _set_status(self, available: bool) -> None:
         if available:
@@ -1021,6 +898,7 @@ class MetricCard(QtWidgets.QFrame):
         detail_size = int(round(13 * self._scale))
         footnote_size = int(round(12 * self._scale))
         status_size = int(round(12 * self._scale))
+        bar_radius = max(1, int(round(6 * self._scale)))
         self.setStyleSheet(
             f"""
             QFrame {{
@@ -1061,6 +939,15 @@ class MetricCard(QtWidgets.QFrame):
             QLabel#status {{
                 font-size: {status_size}px;
                 font-weight: 600;
+            }}
+            QProgressBar#bar {{
+                background-color: #e7ebf2;
+                border: none;
+                border-radius: {bar_radius}px;
+            }}
+            QProgressBar#bar::chunk {{
+                background-color: #22c55e;
+                border-radius: {bar_radius}px;
             }}
             """
         )
@@ -1130,7 +1017,7 @@ class UsageFetchWorker(QtCore.QObject):
         try:
             payload = fetch_usage_with_auth_refresh(self._auth_file, self._base_url, timeout=20.0)
             usage = parse_usage_payload(payload)
-            self.loaded.emit(build_card_models(short_window=usage.short_window, weekly=usage.weekly))
+            self.loaded.emit(build_codex_card(usage))
         except CodexUsageError as exc:
             self.failed.emit(str(exc))
 

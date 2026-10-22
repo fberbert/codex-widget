@@ -8,14 +8,7 @@ from .claude import ClaudeUsage, ClaudeWindow
 from .deepseek import DeepSeekBalance, SpendSnapshot, format_money
 from .mimo import MiMoSnapshot
 from .openai_costs import OpenAICosts
-from .usage import UsageWindow
-
-
-@dataclass(frozen=True)
-class UsageCardModel:
-    title: str
-    percent_remaining: int
-    reset_text: str
+from .usage import CodexUsage, UsageWindow
 
 
 @dataclass(frozen=True)
@@ -28,32 +21,55 @@ class MetricCardModel:
     detail_text: str
     footnote: str
     available: bool
+    primary_percent: int | None = None
+    secondary_percent: int | None = None
 
 
-def build_card_models(
-    *,
-    short_window: UsageWindow | None,
-    weekly: UsageWindow | None,
-) -> tuple[UsageCardModel, ...]:
-    cards: list[UsageCardModel] = []
-
-    if short_window is not None:
-        cards.append(
-            UsageCardModel(
-                title=_window_title(short_window),
-                percent_remaining=_remaining_percent(short_window),
-                reset_text=_reset_text(short_window, include_date=False),
-            )
-        )
-
-    cards.append(
-        UsageCardModel(
-            title="Limite de uso semanal",
-            percent_remaining=_remaining_percent(weekly),
-            reset_text=_reset_text(weekly, include_date=True),
-        )
+def build_codex_card(usage: CodexUsage) -> MetricCardModel:
+    plan = usage.plan_type.strip().capitalize() if usage.plan_type else None
+    return MetricCardModel(
+        title="Codex",
+        primary_label=_window_label(usage.short_window),
+        primary_value=_window_text(usage.short_window),
+        primary_percent=_window_percent(usage.short_window),
+        secondary_label="Janela semanal",
+        secondary_value=_window_text(usage.weekly),
+        secondary_percent=_window_percent(usage.weekly),
+        detail_text=f"Assinatura {plan}" if plan else "Limites de uso do Codex",
+        footnote=_codex_resets(usage),
+        available=usage.short_window is not None or usage.weekly is not None,
     )
-    return tuple(cards)
+
+
+def _window_percent(window: UsageWindow | None) -> int | None:
+    if window is None or window.remaining_percent is None:
+        return None
+    return max(0, min(100, int(round(window.remaining_percent))))
+
+
+def _window_text(window: UsageWindow | None) -> str:
+    percent = _window_percent(window)
+    return "Indisponível" if percent is None else f"{percent}% restantes"
+
+
+def _window_label(window: UsageWindow | None) -> str:
+    seconds = window.window_seconds if window is not None else None
+    if seconds is not None and seconds > 0 and seconds % 3600 == 0:
+        hours = seconds // 3600
+        unit = "hora" if hours == 1 else "horas"
+        return f"Janela de {hours} {unit}"
+    return "Janela curta"
+
+
+def _codex_resets(usage: CodexUsage) -> str:
+    parts: list[str] = []
+    if usage.short_window is not None and usage.short_window.reset_at is not None:
+        short = datetime.fromtimestamp(usage.short_window.reset_at).astimezone()
+        parts.append(f"5h {short:%H:%M}")
+    if usage.weekly is not None and usage.weekly.reset_at is not None:
+        weekly = datetime.fromtimestamp(usage.weekly.reset_at).astimezone()
+        parts.append(f"7d {weekly:%d/%m %H:%M}")
+    return " · ".join(parts) if parts else "Redefinição indisponível"
 
 
 def build_deepseek_card(
@@ -155,19 +171,25 @@ def build_claude_card(usage: ClaudeUsage) -> MetricCardModel:
         title="Claude Code",
         primary_label="Janela de 5 horas",
         primary_value=_claude_window_text(usage.five_hour),
+        primary_percent=_claude_window_percent(usage.five_hour),
         secondary_label="Janela semanal",
         secondary_value=_claude_window_text(usage.seven_day),
+        secondary_percent=_claude_window_percent(usage.seven_day),
         detail_text=detail,
         footnote=_claude_resets(usage),
         available=usage.five_hour is not None or usage.seven_day is not None,
     )
 
 
-def _claude_window_text(window: ClaudeWindow | None) -> str:
+def _claude_window_percent(window: ClaudeWindow | None) -> int | None:
     if window is None:
-        return "Indisponível"
-    remaining = max(0, min(100, int(round(100 - window.utilization))))
-    return f"{remaining}% restantes"
+        return None
+    return max(0, min(100, int(round(100 - window.utilization))))
+
+
+def _claude_window_text(window: ClaudeWindow | None) -> str:
+    percent = _claude_window_percent(window)
+    return "Indisponível" if percent is None else f"{percent}% restantes"
 
 
 def _claude_resets(usage: ClaudeUsage) -> str:
@@ -187,40 +209,3 @@ def _token_text(tokens: int) -> str:
     return f"{tokens} tokens"
 
 
-def _window_title(window: UsageWindow) -> str:
-    seconds = window.window_seconds
-    if seconds is not None and seconds > 0 and seconds % 3600 == 0:
-        hours = seconds // 3600
-        unit = "hora" if hours == 1 else "horas"
-        return f"Limite de uso de {hours} {unit}"
-    return "Limite de uso por janela"
-
-
-def _remaining_percent(window: UsageWindow | None) -> int:
-    if window is None or window.remaining_percent is None:
-        return 0
-    return max(0, min(100, int(round(window.remaining_percent))))
-
-
-def _reset_text(window: UsageWindow | None, *, include_date: bool) -> str:
-    if window is None or window.reset_at is None:
-        return "Redefinição indisponível"
-
-    dt = datetime.fromtimestamp(window.reset_at).astimezone()
-    if include_date:
-        months = (
-            "jan.",
-            "fev.",
-            "mar.",
-            "abr.",
-            "mai.",
-            "jun.",
-            "jul.",
-            "ago.",
-            "set.",
-            "out.",
-            "nov.",
-            "dez.",
-        )
-        return f"Redefinição {dt.day} de {months[dt.month - 1]} de {dt.year} {dt:%H:%M}"
-    return f"Redefinição {dt:%H:%M}"

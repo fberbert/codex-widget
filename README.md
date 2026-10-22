@@ -24,16 +24,15 @@ The widget stays on top of the desktop and can be dragged anywhere.
 ## Features
 
 - Floating always-on-top PyQt6 widget
-- Short-window remaining usage card
-- Weekly remaining usage card
+- Codex card with the short and weekly usage windows side by side
 - DeepSeek balance and tracked-spend card
 - MiMo balance and total-spend card (Chrome session)
-- Claude Code 5-hour and weekly subscription usage card
+- Claude Code card with the 5-hour and weekly subscription windows
 - OpenAI organization spend card (Admin key), with optional credit balance
 - Vertical layout by default, with persisted orientation and size
 - Collapsible compact badge with the key numbers
-- Progress bars matching the remaining percentage
-- Reset time display for both Codex windows
+- Progress bars under each usage percentage (Codex and Claude Code)
+- Reset times for both windows in the card footnote
 - Keyboard resizing for compact desktop placement
 - Uses the existing Codex login from `~/.codex/auth.json`
 
@@ -65,7 +64,7 @@ The response can contain `rate_limit.primary_window` and `rate_limit.secondary_w
 - `limit_window_seconds = 604800` as the **weekly** window
 - any other non-null `limit_window_seconds` as the **short** window (today `18000`, the 5-hour window)
 
-The short-window card title is derived from `limit_window_seconds` (for example, `21600` would render as `Limite de uso de 6 horas`). Only the weekly card is rendered when the response has no short window.
+Both windows are shown side by side in a single **Codex** card: the short window on the left (labelled from `limit_window_seconds`, so `21600` reads `Janela de 6 horas`) and the weekly window on the right. A window missing from the response reads `Indisponível` and renders no bar.
 
 > [!NOTE]
 > `/backend-api/wham/usage` is not a public OpenAI Platform API. It is the same internal account usage endpoint used by Codex-related clients and may change without notice.
