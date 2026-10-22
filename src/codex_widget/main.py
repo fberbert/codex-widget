@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from decimal import Decimal, InvalidOperation
+from datetime import date
 from pathlib import Path
 
 from PyQt6 import QtWidgets
@@ -13,6 +14,7 @@ from .deepseek import (
     DEFAULT_BASE_URL as DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_STATE_FILE as DEFAULT_DEEPSEEK_STATE_FILE,
 )
+from .dotenv import resolve_secret
 from .usage import DEFAULT_AUTH_FILE, DEFAULT_BASE_URL
 
 from .widget import CodexUsageWidget
@@ -23,6 +25,13 @@ def _decimal_arg(value: str) -> Decimal:
         return Decimal(value)
     except InvalidOperation as exc:
         raise argparse.ArgumentTypeError(f"valor decimal inválido: {value}") from exc
+
+
+def _date_arg(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"data inválida (use AAAA-MM-DD): {value}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,17 +63,30 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Perfil do Chrome com a sessão de claude.ai (padrão: detectar automaticamente).",
     )
+    parser.add_argument("--openai-admin-key", default=None)
+    parser.add_argument(
+        "--openai-credits-purchased",
+        type=_decimal_arg,
+        default=None,
+        help="Créditos da OpenAI comprados; o saldo exibido é esse valor menos o custo acumulado.",
+    )
+    parser.add_argument(
+        "--openai-credits-since",
+        type=_date_arg,
+        default=None,
+        help="Data (AAAA-MM-DD) a partir da qual o custo é somado para o saldo da OpenAI.",
+    )
     args = parser.parse_args(argv)
 
     config = load_config(args.config_file)
     deepseek_api_key = (
         args.deepseek_api_key
-        or os.environ.get("DEEPSEEK_API_KEY")
+        or resolve_secret("DEEPSEEK_API_KEY")
         or config.deepseek_api_key
     )
     deepseek_base_url = (
         args.deepseek_base_url
-        or os.environ.get("DEEPSEEK_BASE_URL")
+        or resolve_secret("DEEPSEEK_BASE_URL")
         or config.deepseek_base_url
         or DEFAULT_DEEPSEEK_BASE_URL
     )
@@ -80,6 +102,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     mimo_chrome_profile = args.mimo_chrome_profile or config.mimo_chrome_profile
     claude_chrome_profile = args.claude_chrome_profile or config.claude_chrome_profile
+    openai_admin_key = (
+        args.openai_admin_key
+        or resolve_secret("OPENAI_ADMIN_API_KEY", "OPENAI_ADMIN_KEY")
+        or config.openai_admin_key
+    )
+    openai_credits_purchased = (
+        args.openai_credits_purchased
+        if args.openai_credits_purchased is not None
+        else config.openai_credits_purchased
+    )
+    openai_credits_since = args.openai_credits_since or config.openai_credits_since
 
     app = QtWidgets.QApplication(sys.argv[:1])
     widget = CodexUsageWidget(
@@ -92,6 +125,9 @@ def main(argv: list[str] | None = None) -> int:
         deepseek_spent_baseline=deepseek_spent_baseline,
         mimo_chrome_profile=mimo_chrome_profile,
         claude_chrome_profile=claude_chrome_profile,
+        openai_admin_key=openai_admin_key,
+        openai_credits_purchased=openai_credits_purchased,
+        openai_credits_since=openai_credits_since,
     )
     widget.show()
     return app.exec()

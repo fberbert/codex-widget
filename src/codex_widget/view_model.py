@@ -7,6 +7,7 @@ from decimal import Decimal
 from .claude import ClaudeUsage, ClaudeWindow
 from .deepseek import DeepSeekBalance, SpendSnapshot, format_money
 from .mimo import MiMoSnapshot
+from .openai_costs import OpenAICosts
 from .usage import UsageWindow
 
 
@@ -107,6 +108,44 @@ def build_mimo_card(snapshot: MiMoSnapshot) -> MetricCardModel:
         detail_text=detail,
         footnote=f"Sessão do Chrome · {_token_text(snapshot.total_tokens)}",
         available=snapshot.balance > 0,
+    )
+
+
+def build_openai_card(
+    costs: OpenAICosts,
+    *,
+    credits_purchased: Decimal | None = None,
+) -> MetricCardModel:
+    since = datetime.fromtimestamp(costs.tracked_since).astimezone()
+    today = format_money(costs.today, costs.currency)
+    if credits_purchased is not None:
+        balance = credits_purchased - costs.tracked
+        return MetricCardModel(
+            title="OpenAI",
+            primary_label="Saldo",
+            primary_value=format_money(balance, costs.currency),
+            secondary_label="Gasto no mês",
+            secondary_value=format_money(costs.month, costs.currency),
+            detail_text=(
+                f"Hoje {today}"
+                f" · Desde {since:%d/%m/%Y} {format_money(costs.tracked, costs.currency)}"
+            ),
+            footnote=(
+                f"Créditos informados {format_money(credits_purchased, costs.currency)}"
+                " · custos da organização"
+            ),
+            available=balance > 0,
+        )
+
+    return MetricCardModel(
+        title="OpenAI",
+        primary_label="Gasto no mês",
+        primary_value=format_money(costs.month, costs.currency),
+        secondary_label="Gasto hoje",
+        secondary_value=today,
+        detail_text=f"Período desde {since:%d/%m/%Y}",
+        footnote="Custos da organização (Admin key)",
+        available=True,
     )
 
 

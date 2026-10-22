@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,9 @@ class WidgetConfig:
     deepseek_spent_baseline: Decimal | None = None
     mimo_chrome_profile: str | None = None
     claude_chrome_profile: str | None = None
+    openai_admin_key: str | None = None
+    openai_credits_purchased: Decimal | None = None
+    openai_credits_since: date | None = None
 
 
 def default_config_path() -> Path:
@@ -42,7 +46,20 @@ def load_config(path: Path | None = None) -> WidgetConfig:
         deepseek_spent_baseline=_decimal(raw.get("deepseek_spent_baseline")),
         mimo_chrome_profile=_string(raw.get("mimo_chrome_profile")),
         claude_chrome_profile=_string(raw.get("claude_chrome_profile")),
+        openai_admin_key=_string(raw.get("openai_admin_key")),
+        openai_credits_purchased=_decimal(raw.get("openai_credits_purchased")),
+        openai_credits_since=_date(raw.get("openai_credits_since")),
     )
+
+
+def _date(value: Any) -> date | None:
+    text = _string(value)
+    if text is None:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _string(value: Any) -> str | None:

@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import default_config_path
+from .dotenv import default_env_file, resolve_secret
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_STATE_FILE = (
@@ -49,11 +50,12 @@ class SpendSnapshot:
 
 
 def resolve_api_key(api_key: str | None = None) -> str:
-    value = (api_key or os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+    value = (api_key or "").strip() or resolve_secret("DEEPSEEK_API_KEY")
     if not value:
         raise DeepSeekUsageError(
             "DeepSeek API key não configurada "
-            f"(--deepseek-api-key, DEEPSEEK_API_KEY ou {default_config_path()})"
+            f"(--deepseek-api-key, DEEPSEEK_API_KEY em {default_env_file()} "
+            f"ou {default_config_path()})"
         )
     return value
 

@@ -20,6 +20,12 @@ from .mimo import (
     MiMoUsageError,
     load_snapshot,
 )
+from .openai_costs import (
+    DEFAULT_BASE_URL as DEFAULT_OPENAI_BASE_URL,
+    OpenAICostsError,
+    load_costs,
+    resolve_admin_key,
+)
 from .usage import (
     CodexUsageError,
     fetch_usage_with_auth_refresh,
@@ -39,6 +45,7 @@ from .view_model import (
     build_claude_card,
     build_deepseek_card,
     build_mimo_card,
+    build_openai_card,
 )
 
 MIN_SCALE = 0.45
@@ -67,6 +74,10 @@ class CodexUsageWidget(QtWidgets.QWidget):
         mimo_chrome_profile: str | None = None,
         mimo_base_url: str = DEFAULT_MIMO_BASE_URL,
         claude_chrome_profile: str | None = None,
+        openai_admin_key: str | None = None,
+        openai_credits_purchased: Decimal | None = None,
+        openai_credits_since=None,
+        openai_base_url: str = DEFAULT_OPENAI_BASE_URL,
         ui_state_file=DEFAULT_UI_STATE_FILE,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
@@ -80,6 +91,10 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._mimo_chrome_profile = mimo_chrome_profile
         self._mimo_base_url = mimo_base_url
         self._claude_chrome_profile = claude_chrome_profile
+        self._openai_admin_key = openai_admin_key
+        self._openai_credits_purchased = openai_credits_purchased
+        self._openai_credits_since = openai_credits_since
+        self._openai_base_url = openai_base_url
         self._ui_state_file = ui_state_file
         self._drag_position: QtCore.QPoint | None = None
         self._thread: QtCore.QThread | None = None
@@ -105,6 +120,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._deepseek_model: MetricCardModel | None = None
         self._mimo_model: MetricCardModel | None = None
         self._claude_model: MetricCardModel | None = None
+        self._openai_model: MetricCardModel | None = None
 
         self._cards: tuple[UsageCard, ...] = ()
         self._layout = QtWidgets.QHBoxLayout(self)
@@ -129,9 +145,17 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._layout.addWidget(self._deepseek_card)
         self._layout.addWidget(self._mimo_card)
         self._layout.addWidget(self._claude_card)
+        self._openai_card = MetricCard(
+            title="OpenAI",
+            primary_label="Gasto no mês",
+            secondary_label="Gasto hoje",
+            parent=self,
+        )
+        self._layout.addWidget(self._openai_card)
         self._deepseek_card.set_loading()
         self._mimo_card.set_loading()
         self._claude_card.set_loading()
+        self._openai_card.set_loading()
 
         self._badge = CollapsedBadge(parent=self)
         self._layout.addWidget(self._badge)
@@ -234,6 +258,10 @@ class CodexUsageWidget(QtWidgets.QWidget):
             mimo_chrome_profile=self._mimo_chrome_profile,
             mimo_base_url=self._mimo_base_url,
             claude_chrome_profile=self._claude_chrome_profile,
+            openai_admin_key=self._openai_admin_key,
+            openai_credits_purchased=self._openai_credits_purchased,
+            openai_credits_since=self._openai_credits_since,
+            openai_base_url=self._openai_base_url,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -245,6 +273,8 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._worker.mimo_failed.connect(self._handle_mimo_failed)
         self._worker.claude_loaded.connect(self._handle_claude_loaded)
         self._worker.claude_failed.connect(self._handle_claude_failed)
+        self._worker.openai_loaded.connect(self._handle_openai_loaded)
+        self._worker.openai_failed.connect(self._handle_openai_failed)
         self._worker.finished.connect(self._stop_worker)
         self._thread.start()
 
@@ -295,6 +325,15 @@ class CodexUsageWidget(QtWidgets.QWidget):
     @QtCore.pyqtSlot(str)
     def _handle_claude_failed(self, message: str) -> None:
         self._claude_card.set_error(message)
+
+    @QtCore.pyqtSlot(object)
+    def _handle_openai_loaded(self, model: MetricCardModel) -> None:
+        self._openai_model = model
+        self._openai_card.set_model(model)
+
+    @QtCore.pyqtSlot(str)
+    def _handle_openai_failed(self, message: str) -> None:
+        self._openai_card.set_error(message)
 
     def _show_error(self, message: str) -> None:
         self._drop_cards()
@@ -424,7 +463,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
         screen = QtWidgets.QApplication.primaryScreen()
         if screen is None:
             return True
-        card_count = len(self._cards) + 3
+        card_count = len(self._cards) + 4
         needed = (498 * card_count + 20 * (card_count - 1) + 32) * self._scale
         if self._orientation_locked:
             return True
@@ -438,7 +477,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
 
         if self._collapsed:
             self._layout.setDirection(QtWidgets.QBoxLayout.Direction.TopToBottom)
-            for card in (*self._cards, self._deepseek_card, self._mimo_card, self._claude_card):
+            for card in self._metric_cards():
                 card.apply_scale(self._scale)
                 card.hide()
             self._badge.apply_scale(self._scale)
@@ -461,10 +500,10 @@ class CodexUsageWidget(QtWidgets.QWidget):
         )
         self._layout.setDirection(direction)
         self._layout.setSpacing(spacing)
-        for card in (*self._cards, self._deepseek_card, self._mimo_card, self._claude_card):
+        for card in self._metric_cards():
             card.apply_scale(self._scale)
             card.show()
-        card_count = len(self._cards) + 3
+        card_count = len(self._cards) + 4
         if horizontal:
             width = int(round((498 * card_count + 20 * (card_count - 1) + 32) * self._scale))
             height = int(round(226 * self._scale))
@@ -551,6 +590,15 @@ class CodexUsageWidget(QtWidgets.QWidget):
             thread.wait(THREAD_JOIN_TIMEOUT_MS)
             self._retired_threads.remove(thread)
             thread.deleteLater()
+
+    def _metric_cards(self) -> tuple[QtWidgets.QFrame, ...]:
+        return (
+            *self._cards,
+            self._deepseek_card,
+            self._mimo_card,
+            self._claude_card,
+            self._openai_card,
+        )
 
     def _refit_if_needed(self, screen: QtGui.QScreen | None = None) -> None:
         if self._scale_saved or self._collapsed:
@@ -1027,6 +1075,8 @@ class UsageFetchWorker(QtCore.QObject):
     mimo_failed = QtCore.pyqtSignal(str)
     claude_loaded = QtCore.pyqtSignal(object)
     claude_failed = QtCore.pyqtSignal(str)
+    openai_loaded = QtCore.pyqtSignal(object)
+    openai_failed = QtCore.pyqtSignal(str)
     finished = QtCore.pyqtSignal()
 
     def __init__(
@@ -1041,6 +1091,10 @@ class UsageFetchWorker(QtCore.QObject):
         mimo_chrome_profile: str | None,
         mimo_base_url: str,
         claude_chrome_profile: str | None,
+        openai_admin_key: str | None,
+        openai_credits_purchased: Decimal | None,
+        openai_credits_since,
+        openai_base_url: str,
     ) -> None:
         super().__init__()
         self._auth_file = auth_file
@@ -1052,22 +1106,25 @@ class UsageFetchWorker(QtCore.QObject):
         self._mimo_chrome_profile = mimo_chrome_profile
         self._mimo_base_url = mimo_base_url
         self._claude_chrome_profile = claude_chrome_profile
+        self._openai_admin_key = openai_admin_key
+        self._openai_credits_purchased = openai_credits_purchased
+        self._openai_credits_since = openai_credits_since
+        self._openai_base_url = openai_base_url
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
+        steps = (
+            self._run_codex,
+            self._run_deepseek,
+            self._run_mimo,
+            self._run_claude,
+            self._run_openai,
+        )
         try:
-            self._run_codex()
+            for step in steps:
+                step()
         finally:
-            try:
-                self._run_deepseek()
-            finally:
-                try:
-                    self._run_mimo()
-                finally:
-                    try:
-                        self._run_claude()
-                    finally:
-                        self.finished.emit()
+            self.finished.emit()
 
     def _run_codex(self) -> None:
         try:
@@ -1110,3 +1167,16 @@ class UsageFetchWorker(QtCore.QObject):
             self.claude_loaded.emit(build_claude_card(usage))
         except ClaudeUsageError as exc:
             self.claude_failed.emit(str(exc))
+
+    def _run_openai(self) -> None:
+        try:
+            costs = load_costs(
+                resolve_admin_key(self._openai_admin_key),
+                credits_since=self._openai_credits_since,
+                base_url=self._openai_base_url,
+            )
+            self.openai_loaded.emit(
+                build_openai_card(costs, credits_purchased=self._openai_credits_purchased)
+            )
+        except OpenAICostsError as exc:
+            self.openai_failed.emit(str(exc))

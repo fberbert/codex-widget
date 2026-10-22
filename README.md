@@ -29,6 +29,7 @@ The widget stays on top of the desktop and can be dragged anywhere.
 - DeepSeek balance and tracked-spend card
 - MiMo balance and total-spend card (Chrome session)
 - Claude Code 5-hour and weekly subscription usage card
+- OpenAI organization spend card (Admin key), with optional credit balance
 - Vertical layout by default, with persisted orientation and size
 - Collapsible compact badge with the key numbers
 - Progress bars matching the remaining percentage
@@ -125,9 +126,23 @@ Cookie: <Chrome session cookies>
 
 The widget selects the organization with the `chat` capability, then displays the remaining percentages and reset times from `five_hour` and `seven_day`. The plan comes from that organization's rate-limit tier. If the session expires, sign in at `https://claude.ai` in Chrome. Use `--claude-chrome-profile` when the desired session is not in the automatically selected Chrome profile. The widget does not read or rewrite `~/.claude/.credentials.json`.
 
+## How the OpenAI Card Works
+
+The OpenAI card reads organization costs from the Admin API:
+
+```http
+GET https://api.openai.com/v1/organization/costs?start_time=<unix>&bucket_width=1d&limit=180
+Authorization: Bearer <admin key>
+```
+
+This endpoint requires an **Admin key** (`sk-admin-…`) with the `api.usage.read` scope, created at platform.openai.com → Settings → Organization → Admin keys. A project key (`sk-proj-…`) returns HTTP 403 and the card says so. Daily buckets are summed into spend for today, for the current month, and for the tracked window; pagination follows `next_page`.
+
+> [!NOTE]
+> OpenAI exposes **no credit-balance endpoint**, not even to Admin keys (confirmed by OpenAI support in September 2026); the balance lives only in the browser dashboard. Set `openai_credits_purchased` (and optionally `openai_credits_since`, default: start of the current month) to display `Saldo = créditos informados − custo acumulado`. Without it the card shows month and day spend only.
+
 ## Configuration File
 
-GUI launchers (desktop entries, app menus) do not inherit the shell environment, so export the DeepSeek key once in a config file instead of relying on `DEEPSEEK_API_KEY`:
+GUI launchers (desktop entries, app menus) do not inherit the shell environment. The widget therefore also reads `~/.env` directly, so keys exported there work without any extra setup; anything not found there can be set in the config file:
 
 ```text
 ~/.config/codex-widget/config.json
@@ -140,7 +155,10 @@ GUI launchers (desktop entries, app menus) do not inherit the shell environment,
   "deepseek_state_file": "~/.local/state/codex-widget/deepseek-spend.json",
   "deepseek_spent_baseline": "12.34",
   "mimo_chrome_profile": "Default",
-  "claude_chrome_profile": "Default"
+  "claude_chrome_profile": "Default",
+  "openai_admin_key": "sk-admin-...",
+  "openai_credits_purchased": "50.00",
+  "openai_credits_since": "2026-09-01"
 }
 ```
 
@@ -150,12 +168,13 @@ All keys are optional. Restrict the file:
 chmod 600 ~/.config/codex-widget/config.json
 ```
 
-Resolution order for the DeepSeek key, base URL and state file:
+Resolution order for credentials and endpoints:
 
-1. command-line flag (`--deepseek-api-key`, `--deepseek-base-url`, `--deepseek-state-file`)
-2. environment variable (`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`)
-3. config file
-4. built-in default
+1. command-line flag (`--deepseek-api-key`, `--openai-admin-key`, …)
+2. exported environment variable (`DEEPSEEK_API_KEY`, `OPENAI_ADMIN_API_KEY` or `OPENAI_ADMIN_KEY`, …)
+3. `~/.env` (`KEY=value` lines, `export KEY=value` and quotes supported; override the path with `CODEX_WIDGET_ENV_FILE`)
+4. config file
+5. built-in default
 
 Set `CODEX_WIDGET_CONFIG=/path/to/config.json` (or `--config-file`) to use another file.
 
@@ -164,9 +183,10 @@ Set `CODEX_WIDGET_CONFIG=/path/to/config.json` (or `--config-file`) to use anoth
 - Linux desktop environment
 - Python 3.10+
 - A working Codex login at `~/.codex/auth.json`
-- DeepSeek API key in `~/.config/codex-widget/config.json` or `DEEPSEEK_API_KEY` for the DeepSeek card
+- DeepSeek API key in `~/.env`, `DEEPSEEK_API_KEY` or `~/.config/codex-widget/config.json` for the DeepSeek card
 - Google Chrome logged in at `https://platform.xiaomimimo.com` for the MiMo card
 - Google Chrome logged in at `https://claude.ai` for the Claude Code card
+- OpenAI Admin key in `~/.env` (`OPENAI_ADMIN_API_KEY`), the environment or the config file, for the OpenAI card
 - GNOME Keyring (libsecret) holding the Chrome Safe Storage key
 - PyQt6
 
@@ -219,6 +239,9 @@ codex-widget --deepseek-state-file ~/.local/state/codex-widget/deepseek-spend.js
 codex-widget --deepseek-spent-baseline 12.34    # spend before monitoring started
 codex-widget --mimo-chrome-profile Default      # defaults to auto-detection
 codex-widget --claude-chrome-profile Default   # defaults to auto-detection
+codex-widget --openai-admin-key sk-admin-...   # defaults to OPENAI_ADMIN_KEY
+codex-widget --openai-credits-purchased 50.00  # enables the OpenAI balance
+codex-widget --openai-credits-since 2026-09-01 # window summed for that balance
 codex-widget --config-file ~/.config/codex-widget/config.json
 ```
 
@@ -307,11 +330,13 @@ requirements.txt               Runtime dependencies
 scripts/codex_usage_widget.py  Local development launcher
 src/codex_widget/main.py       Application entry point
 src/codex_widget/config.py     Persistent user config (API keys and overrides)
+src/codex_widget/dotenv.py     Credential lookup in `~/.env` for GUI launchers
 src/codex_widget/usage.py      Codex auth and usage fetcher
 src/codex_widget/deepseek.py   DeepSeek balance fetcher and spend ledger
 src/codex_widget/chrome_cookies.py  Chrome cookie database reader/decryptor
 src/codex_widget/mimo.py       MiMo console API client
 src/codex_widget/claude.py     Claude browser-session usage client
+src/codex_widget/openai_costs.py  OpenAI Admin API costs client
 src/codex_widget/ui_state.py   Persisted layout, size and collapsed state
 src/codex_widget/view_model.py Usage formatting for the UI
 src/codex_widget/widget.py     PyQt6 floating widget
@@ -325,6 +350,8 @@ src/codex_widget/widget.py     PyQt6 floating widget
 - The DeepSeek API key is only sent to `https://api.deepseek.com/user/balance`.
 - MiMo session cookies are decrypted locally with the Chrome Safe Storage key from the GNOME Keyring and are only sent to `https://platform.xiaomimimo.com`.
 - Claude session cookies are sent only to `https://claude.ai`; the widget never reads or writes Claude Code OAuth tokens.
+- `~/.env` is read only for the specific credential names the widget needs; other secrets in that file are ignored and never logged.
+- The OpenAI Admin key is only sent to `https://api.openai.com/v1/organization/costs` and is read-only for usage data.
 - The spend ledger contains balances and inferred spend only (`~/.local/state/codex-widget/deepseek-spend.json`).
 - The UI state file (`~/.local/state/codex-widget/ui.json`) contains only layout, scale and collapsed state.
 - The config file (`~/.config/codex-widget/config.json`) stores API keys in plain text; keep it at mode `600` and out of version control.
