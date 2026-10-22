@@ -4,12 +4,15 @@
 
 # Codex Widget
 
-Codex Widget is a small floating desktop widget for monitoring your current Codex usage limits. It shows the two limits exposed by the ChatGPT/Codex account usage endpoint:
+Codex Widget is a small floating desktop widget for monitoring your Codex usage limits and your DeepSeek, MiMo and Claude Code balances. It shows the **short usage window** (the 5-hour window today) and the **weekly usage window** exposed by the ChatGPT/Codex account usage endpoint, plus **DeepSeek**, **MiMo** and **Claude Code** cards with saldo/gasto and subscription usage.
 
-- **5-hour usage window**
-- **Weekly usage window**
+> [!NOTE]
+> OpenAI restored the short Codex usage window. The widget labels that card from `limit_window_seconds`, so a 5-hour window reads "Limite de uso de 5 horas" and any future 6-hour window reads "Limite de uso de 6 horas" without code changes.
 
-The widget stays on top of the desktop, can be dragged anywhere, and supports compact horizontal or vertical layouts.
+> [!NOTE]
+> DeepSeek's public API exposes the **current balance only** (`GET /user/balance`); it has no spend/usage endpoint. The widget measures spend from balance drops between refreshes and persists the ledger locally. Use `--deepseek-spent-baseline` to add spend that happened before the widget started monitoring.
+
+The widget stays on top of the desktop and can be dragged anywhere.
 
 <p align="center">
   <img src="assets/codex-widget-screenshot.png" alt="Codex Widget running on the desktop">
@@ -21,10 +24,15 @@ The widget stays on top of the desktop, can be dragged anywhere, and supports co
 ## Features
 
 - Floating always-on-top PyQt6 widget
-- 5-hour and weekly remaining usage cards
+- Short-window remaining usage card
+- Weekly remaining usage card
+- DeepSeek balance and tracked-spend card
+- MiMo balance and total-spend card (Chrome session)
+- Claude Code 5-hour and weekly subscription usage card
+- Vertical layout by default, with persisted orientation and size
+- Collapsible compact badge with the key numbers
 - Progress bars matching the remaining percentage
-- Reset time display for both windows
-- Horizontal and vertical layouts
+- Reset time display for both Codex windows
 - Keyboard resizing for compact desktop placement
 - Uses the existing Codex login from `~/.codex/auth.json`
 
@@ -51,19 +59,115 @@ chatgpt-account-id: <account_id>
 Accept: application/json
 ```
 
-The response contains `rate_limit.primary_window` and `rate_limit.secondary_window`. Codex Widget maps:
+The response can contain `rate_limit.primary_window` and `rate_limit.secondary_window`. Codex Widget parses:
 
-- `limit_window_seconds = 18000` to the **5-hour** card
-- `limit_window_seconds = 604800` to the **weekly** card
+- `limit_window_seconds = 604800` as the **weekly** window
+- any other non-null `limit_window_seconds` as the **short** window (today `18000`, the 5-hour window)
+
+The short-window card title is derived from `limit_window_seconds` (for example, `21600` would render as `Limite de uso de 6 horas`). Only the weekly card is rendered when the response has no short window.
 
 > [!NOTE]
 > `/backend-api/wham/usage` is not a public OpenAI Platform API. It is the same internal account usage endpoint used by Codex-related clients and may change without notice.
+
+## How the DeepSeek Card Works
+
+The DeepSeek card uses your API key from `DEEPSEEK_API_KEY` (or `--deepseek-api-key`) and calls:
+
+```http
+GET https://api.deepseek.com/user/balance
+Authorization: Bearer <DEEPSEEK_API_KEY>
+Accept: application/json
+```
+
+The response returns `is_available` and `balance_infos[]` with `currency`, `total_balance`, `granted_balance`, and `topped_up_balance`. The card shows the total balance, the granted/topped-up split, and the currency reported by the API (`US$`, `CN¥`, `€`, `R$`).
+
+DeepSeek does not expose spend or usage through its public API. The widget therefore infers spend from **balance decreases between refreshes**:
+
+- balance drop → added to `Gasto monitorado`
+- balance increase (top-up) → recorded, never counted as negative spend
+- the ledger is persisted at `~/.local/state/codex-widget/deepseek-spend.json` (override with `--deepseek-state-file`)
+
+Because only the current balance is available, spend from before the first run is not included. To include it, pass the total spent so far from the DeepSeek dashboard:
+
+```bash
+codex-widget --deepseek-spent-baseline 12.34
+```
+
+With a baseline the label becomes `Gasto total` (baseline + observed spend). Without it, the label stays `Gasto monitorado` and the footnote shows when monitoring started.
+
+## How the MiMo Card Works
+
+MiMo's platform has no API-key-authenticated balance/usage endpoint: `/api/v1/balance` and `/api/v1/usage` on `platform.xiaomimimo.com` require the Xiaomi account session, and the API key only authenticates inference (`api.xiaomimimo.com`). The widget therefore reuses the session already present in your local **Google Chrome** profile:
+
+1. finds the Chrome profile whose cookie database contains `platform.xiaomimimo.com` cookies (or uses `--mimo-chrome-profile Default`)
+2. decrypts the session cookies locally using the key stored in the GNOME keyring (`Chrome Safe Storage`)
+3. calls, with those cookies only:
+
+```http
+GET https://platform.xiaomimimo.com/api/v1/balance
+GET https://platform.xiaomimimo.com/api/v1/usage
+GET https://platform.xiaomimimo.com/api/v1/accumulatedRechargeAmount
+```
+
+The card shows the balance, the all-time spend (`costUsage.totalCost`), the current-month spend, the accumulated recharge and the total tokens. When the session expires, the card shows `Sessão do Chrome expirada`; log in again at `https://platform.xiaomimimo.com`.
+
+The cookie database is copied to a temporary directory before reading, so a running Chrome does not block the widget. Decrypted cookies stay in memory and are never logged.
+
+## How the Claude Code Card Works
+
+The Claude Code card reads the logged-in Chrome session for `claude.ai` (no Claude Code OAuth token required). It calls the site's internal JSON endpoints:
+
+```http
+GET https://claude.ai/api/organizations
+GET https://claude.ai/api/organizations/<chat_org_uuid>/usage
+Cookie: <Chrome session cookies>
+```
+
+The widget selects the organization with the `chat` capability, then displays the remaining percentages and reset times from `five_hour` and `seven_day`. The plan comes from that organization's rate-limit tier. If the session expires, sign in at `https://claude.ai` in Chrome. Use `--claude-chrome-profile` when the desired session is not in the automatically selected Chrome profile. The widget does not read or rewrite `~/.claude/.credentials.json`.
+
+## Configuration File
+
+GUI launchers (desktop entries, app menus) do not inherit the shell environment, so export the DeepSeek key once in a config file instead of relying on `DEEPSEEK_API_KEY`:
+
+```text
+~/.config/codex-widget/config.json
+```
+
+```json
+{
+  "deepseek_api_key": "sk-...",
+  "deepseek_base_url": "https://api.deepseek.com",
+  "deepseek_state_file": "~/.local/state/codex-widget/deepseek-spend.json",
+  "deepseek_spent_baseline": "12.34",
+  "mimo_chrome_profile": "Default",
+  "claude_chrome_profile": "Default"
+}
+```
+
+All keys are optional. Restrict the file:
+
+```bash
+chmod 600 ~/.config/codex-widget/config.json
+```
+
+Resolution order for the DeepSeek key, base URL and state file:
+
+1. command-line flag (`--deepseek-api-key`, `--deepseek-base-url`, `--deepseek-state-file`)
+2. environment variable (`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`)
+3. config file
+4. built-in default
+
+Set `CODEX_WIDGET_CONFIG=/path/to/config.json` (or `--config-file`) to use another file.
 
 ## Requirements
 
 - Linux desktop environment
 - Python 3.10+
 - A working Codex login at `~/.codex/auth.json`
+- DeepSeek API key in `~/.config/codex-widget/config.json` or `DEEPSEEK_API_KEY` for the DeepSeek card
+- Google Chrome logged in at `https://platform.xiaomimimo.com` for the MiMo card
+- Google Chrome logged in at `https://claude.ai` for the Claude Code card
+- GNOME Keyring (libsecret) holding the Chrome Safe Storage key
 - PyQt6
 
 ## Installation
@@ -109,9 +213,41 @@ Optional arguments:
 codex-widget --auth-file ~/.codex/auth.json
 codex-widget --refresh-seconds 30
 codex-widget --base-url https://chatgpt.com/backend-api
+codex-widget --deepseek-api-key sk-...          # defaults to DEEPSEEK_API_KEY
+codex-widget --deepseek-base-url https://api.deepseek.com
+codex-widget --deepseek-state-file ~/.local/state/codex-widget/deepseek-spend.json
+codex-widget --deepseek-spent-baseline 12.34    # spend before monitoring started
+codex-widget --mimo-chrome-profile Default      # defaults to auto-detection
+codex-widget --claude-chrome-profile Default   # defaults to auto-detection
+codex-widget --config-file ~/.config/codex-widget/config.json
 ```
 
-The widget refreshes usage automatically. The default refresh interval is 60 seconds.
+The widget refreshes usage and balances automatically. The default refresh interval is 60 seconds. The default layout is vertical; `Ctrl+H` switches between vertical and horizontal.
+
+## Layout, Size and Collapsed View
+
+The default layout is **vertical**. View preferences are persisted per user in:
+
+```text
+~/.local/state/codex-widget/ui.json
+```
+
+- `horizontal` / `orientation_locked` — layout chosen with `Ctrl+H` (the forced orientation survives restarts)
+- `scale` — widget size chosen with `Ctrl++` / `Ctrl+-`
+- `collapsed` — collapsed state
+- `screen_name` / `offset_x` / `offset_y` — monitor and position relative to its available area, saved when you drag the widget, collapse/expand it, or close it
+
+On the first run the widget shrinks to fit the available screen area. Subsequent runs restore the saved size and position on the same monitor, even if the monitor's virtual coordinates changed. If that monitor is disconnected, the widget opens on the primary screen instead.
+
+The `–` button at the bottom-right collapses the widget into a compact badge:
+
+<p align="center">
+  <img src="assets/codex-widget-collapsed.png" alt="Codex Widget collapsed badge" width="300">
+</p>
+
+The badge shows the Codex and Claude percentages plus the DeepSeek and MiMo balances. It is anchored at the `–` button's corner and constrained to that monitor, not the primary monitor. Expanding restores the previous position on the same monitor; if the badge was dragged to another monitor, the panel expands from its new corner. The collapsed state also survives restarts.
+
+If a saved size no longer fits the current screen, it is reduced automatically on startup.
 
 ## Keyboard Shortcuts
 
@@ -170,16 +306,28 @@ codex-widget.desktop           Desktop launcher template
 requirements.txt               Runtime dependencies
 scripts/codex_usage_widget.py  Local development launcher
 src/codex_widget/main.py       Application entry point
+src/codex_widget/config.py     Persistent user config (API keys and overrides)
 src/codex_widget/usage.py      Codex auth and usage fetcher
+src/codex_widget/deepseek.py   DeepSeek balance fetcher and spend ledger
+src/codex_widget/chrome_cookies.py  Chrome cookie database reader/decryptor
+src/codex_widget/mimo.py       MiMo console API client
+src/codex_widget/claude.py     Claude browser-session usage client
+src/codex_widget/ui_state.py   Persisted layout, size and collapsed state
 src/codex_widget/view_model.py Usage formatting for the UI
 src/codex_widget/widget.py     PyQt6 floating widget
 ```
 
 ## Security Notes
 
-- The widget never prints your access token.
-- The widget reads `~/.codex/auth.json` locally.
-- The access token is only sent to `https://chatgpt.com/backend-api/wham/usage`.
-- If usage fetching fails, the widget shows an error message instead of exposing token data.
+- The widget never prints your access token, DeepSeek API key or Chrome session cookies.
+- The widget reads `~/.codex/auth.json` locally and `DEEPSEEK_API_KEY` from the environment.
+- The Codex access token is only sent to `https://chatgpt.com/backend-api/wham/usage`.
+- The DeepSeek API key is only sent to `https://api.deepseek.com/user/balance`.
+- MiMo session cookies are decrypted locally with the Chrome Safe Storage key from the GNOME Keyring and are only sent to `https://platform.xiaomimimo.com`.
+- Claude session cookies are sent only to `https://claude.ai`; the widget never reads or writes Claude Code OAuth tokens.
+- The spend ledger contains balances and inferred spend only (`~/.local/state/codex-widget/deepseek-spend.json`).
+- The UI state file (`~/.local/state/codex-widget/ui.json`) contains only layout, scale and collapsed state.
+- The config file (`~/.config/codex-widget/config.json`) stores API keys in plain text; keep it at mode `600` and out of version control.
+- If usage or balance fetching fails, the widget shows an error message instead of exposing credentials.
 
-If you suspect your local Codex credentials were exposed, rotate/revoke the credential or log out and log back in with Codex.
+If you suspect your local Codex credentials, DeepSeek API key, MiMo session or Claude Code session were exposed, rotate/revoke them and log in again.

@@ -9,6 +9,8 @@ description = "Floating desktop widget for Codex usage windows"
 requires-python = ">=3.10"
 dependencies = [
     "PyQt6>=6.6",
+    "cryptography>=41",
+    "secretstorage>=3.3",
 ]
 
 [project.scripts]

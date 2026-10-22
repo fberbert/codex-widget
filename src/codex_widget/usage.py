@@ -16,6 +16,7 @@ DEFAULT_BASE_URL = "https://chatgpt.com/backend-api"
 DEFAULT_AUTH_BASE_URL = "https://auth.openai.com"
 OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OAUTH_SCOPE = "openid profile email offline_access"
+WEEKLY_WINDOW_SECONDS = 604_800
 
 
 class CodexUsageError(RuntimeError):
@@ -37,7 +38,7 @@ class UsageWindow:
 
 @dataclass(frozen=True)
 class CodexUsage:
-    five_hour: UsageWindow | None
+    short_window: UsageWindow | None
     weekly: UsageWindow | None
     plan_type: str | None
 
@@ -203,27 +204,27 @@ def parse_usage_payload(payload: dict[str, Any], now: int | None = None) -> Code
     now_epoch = int(time.time()) if now is None else now
     rate_limit = payload.get("rate_limit")
     if not isinstance(rate_limit, dict):
-        return CodexUsage(five_hour=None, weekly=None, plan_type=_plan_type(payload))
+        return CodexUsage(short_window=None, weekly=None, plan_type=_plan_type(payload))
 
     primary = _parse_window(rate_limit.get("primary_window"), now_epoch)
     secondary = _parse_window(rate_limit.get("secondary_window"), now_epoch)
 
-    five_hour = None
+    short_window = None
     weekly = None
     for window in (primary, secondary):
         if window is None:
             continue
-        if window.window_seconds == 604800:
-            weekly = window
-        elif window.window_seconds == 18000:
-            five_hour = window
+        if window.window_seconds == WEEKLY_WINDOW_SECONDS:
+            weekly = weekly or window
+        else:
+            short_window = short_window or window
 
-    if five_hour is None and primary is not None and primary.window_seconds != 604800:
-        five_hour = primary
+    if short_window is None and primary is not None and primary.window_seconds != WEEKLY_WINDOW_SECONDS:
+        short_window = primary
     if weekly is None and secondary is not None:
         weekly = secondary
 
-    return CodexUsage(five_hour=five_hour, weekly=weekly, plan_type=_plan_type(payload))
+    return CodexUsage(short_window=short_window, weekly=weekly, plan_type=_plan_type(payload))
 
 
 def _account_id_from_id_token(id_token: str) -> str | None:
