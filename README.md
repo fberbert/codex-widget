@@ -31,6 +31,7 @@ The widget stays on top of the desktop and can be dragged anywhere.
 - OpenAI organization spend card (Admin key), with optional credit balance
 - Vertical layout by default, with persisted orientation and size
 - Collapsible compact badge with the key numbers
+- Click a card to open an enlarged copy next to the panel
 - Progress bars under each usage percentage (Codex and Claude Code)
 - Reset times for both windows in the card footnote
 - Keyboard resizing for compact desktop placement
@@ -270,6 +271,12 @@ The `–` button at the bottom-right collapses the widget into a compact badge:
 The badge shows the Codex and Claude percentages plus the DeepSeek and MiMo balances. It is anchored at the `–` button's corner and constrained to that monitor, not the primary monitor. Expanding restores the previous position on the same monitor; if the badge was dragged to another monitor, the panel expands from its new corner. The collapsed state also survives restarts.
 
 If a saved size no longer fits the current screen, it is reduced automatically on startup.
+
+## Enlarged Card View
+
+Clicking a card opens an enlarged copy of it in a frameless window placed next to the panel: to the right when the screen has room, otherwise to the left, below, or above, always clamped to the monitor under the panel. The copy follows the live data, so a refresh while it is open updates it too.
+
+Clicking the enlarged card closes it, as does clicking the same card again, collapsing the panel, dragging the panel, or closing the widget. Clicking another card swaps the content instead of opening a second window. Dragging from a card still moves the panel and does not open the enlarged view.
 
 ## Keyboard Shortcuts
 

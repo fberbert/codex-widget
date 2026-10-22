@@ -152,9 +152,13 @@ class CodexUsageWidget(QtWidgets.QWidget):
             secondary_label="Gasto hoje",
             parent=self,
         )
+        self._detail_popup = CardDetailPopup(parent=self)
+        self._detail_popup.clicked.connect(self._hide_card_detail)
         for card in self._metric_cards():
             self._layout.addWidget(card)
             card.set_loading()
+            card.clicked.connect(lambda card=card: self._toggle_card_detail(card))
+            card.moved.connect(self._save_ui_state)
 
         self._badge = CollapsedBadge(parent=self)
         self._layout.addWidget(self._badge)
@@ -222,7 +226,22 @@ class CodexUsageWidget(QtWidgets.QWidget):
                 self._save_ui_state()
         super().mouseReleaseEvent(event)
 
+    def moveEvent(self, event: QtGui.QMoveEvent | None) -> None:  # noqa: N802
+        super().moveEvent(event)
+        self._hide_card_detail()
+
+    def _toggle_card_detail(self, card: MetricCard) -> None:
+        popup = self._detail_popup
+        if popup.isVisible() and popup.card_title() == card.labels()[0]:
+            popup.hide()
+            return
+        popup.show_card(card, panel=self.frameGeometry(), scale=self._scale)
+
+    def _hide_card_detail(self) -> None:
+        self._detail_popup.hide()
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:  # noqa: N802
+        self._hide_card_detail()
         if self.isVisible():
             self._save_ui_state()
         self._closing = True
@@ -339,6 +358,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
     def _toggle_collapsed(self) -> None:
         collapsing = not self._collapsed
         source_screen = self._source_screen()
+        self._hide_card_detail()
         bottom_right = self._bottom_right()
         if collapsing:
             self._expanded_position = self.pos()
@@ -756,16 +776,28 @@ class MetricCard(QtWidgets.QFrame):
     MIN_WIDTH = 498
     MIN_HEIGHT = 228
 
+    clicked = QtCore.pyqtSignal()
+    moved = QtCore.pyqtSignal()
+    updated = QtCore.pyqtSignal()
+
     def __init__(
         self,
         *,
         title: str,
         primary_label: str,
         secondary_label: str,
+        interactive: bool = True,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._scale = 1.0
+        self._state: tuple[str, object] = ("loading", None)
+        self._interactive = interactive
+        self._drag_offset: QtCore.QPoint | None = None
+        self._press_position: QtCore.QPoint | None = None
+        self._moved = False
+        if interactive:
+            self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._default_title = title
         self._default_primary_label = primary_label
         self._default_secondary_label = secondary_label
@@ -843,6 +875,7 @@ class MetricCard(QtWidgets.QFrame):
         self._apply_style()
 
     def set_model(self, model: MetricCardModel) -> None:
+        self._state: tuple[str, object] = ("model", model)
         self._title.setText(model.title)
         self._primary_caption.setText(model.primary_label)
         self._primary_value.setText(model.primary_value)
@@ -854,18 +887,47 @@ class MetricCard(QtWidgets.QFrame):
         self._footnote.setText(model.footnote)
         self._set_status(model.available)
         self._apply_style()
+        self.updated.emit()
 
     def set_loading(self) -> None:
+        self._state = ("loading", None)
         self._reset_defaults()
         self._footnote.setText("Atualizando…")
         self._status.setText("")
         self._apply_style()
+        self.updated.emit()
 
     def set_error(self, message: str) -> None:
+        self._state = ("error", message)
         self._reset_defaults()
         self._footnote.setText(message[:120])
         self._set_status(False)
         self._apply_style()
+        self.updated.emit()
+
+    def labels(self) -> tuple[str, str, str]:
+        return (
+            self._default_title,
+            self._default_primary_label,
+            self._default_secondary_label,
+        )
+
+    def set_labels(self, *, title: str, primary_label: str, secondary_label: str) -> None:
+        self._default_title = title
+        self._default_primary_label = primary_label
+        self._default_secondary_label = secondary_label
+
+    def state(self) -> tuple[str, object]:
+        return self._state
+
+    def apply_state(self, state: tuple[str, object]) -> None:
+        kind, payload = state
+        if kind == "model" and isinstance(payload, MetricCardModel):
+            self.set_model(payload)
+        elif kind == "error" and isinstance(payload, str):
+            self.set_error(payload)
+        else:
+            self.set_loading()
 
     def _reset_defaults(self) -> None:
         self._title.setText(self._default_title)
@@ -951,6 +1013,174 @@ class MetricCard(QtWidgets.QFrame):
             }}
             """
         )
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent | None) -> None:  # noqa: N802
+        if (
+            self._interactive
+            and event
+            and event.button() == QtCore.Qt.MouseButton.LeftButton
+        ):
+            self._press_position = event.globalPosition().toPoint()
+            self._drag_offset = self._press_position - self.window().frameGeometry().topLeft()
+            self._moved = False
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent | None) -> None:  # noqa: N802
+        if (
+            event
+            and event.buttons() & QtCore.Qt.MouseButton.LeftButton
+            and self._drag_offset is not None
+            and self._press_position is not None
+        ):
+            current = event.globalPosition().toPoint()
+            if (current - self._press_position).manhattanLength() > 4:
+                self._moved = True
+            if self._moved:
+                self.window().move(current - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:  # noqa: N802
+        if (
+            self._interactive
+            and event
+            and event.button() == QtCore.Qt.MouseButton.LeftButton
+            and self._press_position is not None
+        ):
+            self._drag_offset = None
+            self._press_position = None
+            if self._moved:
+                self.moved.emit()
+            else:
+                self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class CardDetailPopup(QtWidgets.QWidget):
+    """Enlarged copy of a metric card, shown next to the panel."""
+
+    GAP = 14
+
+    clicked = QtCore.pyqtSignal()
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent, QtCore.Qt.WindowType.Tool)
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._source_title = ""
+        self._source: MetricCard | None = None
+        self._card = MetricCard(
+            title="",
+            primary_label="",
+            secondary_label="",
+            interactive=False,
+            parent=self,
+        )
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._card)
+
+    @staticmethod
+    def placement(
+        panel: QtCore.QRect,
+        size: QtCore.QSize,
+        area: QtCore.QRect,
+    ) -> QtCore.QPoint:
+        gap = CardDetailPopup.GAP
+        right = panel.right() + 1 + gap
+        left = panel.x() - gap - size.width()
+        below = panel.bottom() + 1 + gap
+        above = panel.y() - gap - size.height()
+        if right + size.width() <= area.right() + 1:
+            x, y = right, panel.y()
+        elif left >= area.x():
+            x, y = left, panel.y()
+        elif below + size.height() <= area.bottom() + 1:
+            x, y = panel.x(), below
+        elif above >= area.y():
+            x, y = panel.x(), above
+        else:
+            x, y = right, panel.y()
+        max_x = area.right() + 1 - size.width()
+        max_y = area.bottom() + 1 - size.height()
+        x = min(max(x, area.x()), max(area.x(), max_x))
+        y = min(max(y, area.y()), max(area.y(), max_y))
+        return QtCore.QPoint(x, y)
+
+    def card_title(self) -> str:
+        return self._source_title
+
+    def show_card(self, card: MetricCard, *, panel: QtCore.QRect, scale: float) -> None:
+        self._detach_source()
+        self._source = card
+        card.updated.connect(self._sync_from_source)
+        self._source_title = card.labels()[0]
+        self._sync_from_source()
+        area = self._available_area(panel)
+        self._card.apply_scale(self._fitting_scale(scale, area))
+        size = self.sizeHint().expandedTo(self._card.minimumSize())
+        self.resize(size)
+        self.move(self.placement(panel, size, area))
+        self.show()
+        self.raise_()
+
+    def hideEvent(self, event: QtGui.QHideEvent | None) -> None:  # noqa: N802
+        self._detach_source()
+        super().hideEvent(event)
+
+    def _sync_from_source(self) -> None:
+        if self._source is None:
+            return
+        title, primary_label, secondary_label = self._source.labels()
+        self._card.set_labels(
+            title=title,
+            primary_label=primary_label,
+            secondary_label=secondary_label,
+        )
+        self._card.apply_state(self._source.state())
+
+    def _detach_source(self) -> None:
+        if self._source is not None:
+            try:
+                self._source.updated.disconnect(self._sync_from_source)
+            except TypeError:
+                pass
+            self._source = None
+
+    def _fitting_scale(self, scale: float, area: QtCore.QRect) -> float:
+        target = _clamp_scale(max(scale, 0.6) * 1.8)
+        while target > MIN_SCALE:
+            width = MetricCard.MIN_WIDTH * target
+            height = MetricCard.MIN_HEIGHT * target
+            if width <= area.width() - 2 * self.GAP and height <= area.height() - 2 * self.GAP:
+                break
+            target = round(target - SCALE_STEP, 2)
+        return _clamp_scale(target)
+
+    def _available_area(self, panel: QtCore.QRect) -> QtCore.QRect:
+        screen = QtWidgets.QApplication.screenAt(panel.center())
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
+        if screen is None:
+            return panel
+        return screen.availableGeometry()
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:  # noqa: N802
+        if event and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class UsageFetchWorker(QtCore.QObject):
