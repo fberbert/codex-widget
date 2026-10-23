@@ -15,6 +15,12 @@ from .deepseek import (
     fetch_balance,
     resolve_api_key,
 )
+from .kiro import (
+    DEFAULT_BASE_URL as DEFAULT_KIRO_BASE_URL,
+    DEFAULT_TOKEN_DB as DEFAULT_KIRO_TOKEN_DB,
+    KiroUsageError,
+    load_usage as load_kiro_usage,
+)
 from .mimo import (
     DEFAULT_BASE_URL as DEFAULT_MIMO_BASE_URL,
     MiMoUsageError,
@@ -42,6 +48,7 @@ from .view_model import (
     MetricCardModel,
     build_codex_card,
     build_claude_card,
+    build_kiro_card,
     build_deepseek_card,
     build_mimo_card,
     build_openai_card,
@@ -73,6 +80,8 @@ class CodexUsageWidget(QtWidgets.QWidget):
         mimo_chrome_profile: str | None = None,
         mimo_base_url: str = DEFAULT_MIMO_BASE_URL,
         claude_chrome_profile: str | None = None,
+        kiro_token_db=DEFAULT_KIRO_TOKEN_DB,
+        kiro_base_url: str = DEFAULT_KIRO_BASE_URL,
         openai_admin_key: str | None = None,
         openai_credits_purchased: Decimal | None = None,
         openai_credits_since=None,
@@ -90,6 +99,8 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._mimo_chrome_profile = mimo_chrome_profile
         self._mimo_base_url = mimo_base_url
         self._claude_chrome_profile = claude_chrome_profile
+        self._kiro_token_db = kiro_token_db
+        self._kiro_base_url = kiro_base_url
         self._openai_admin_key = openai_admin_key
         self._openai_credits_purchased = openai_credits_purchased
         self._openai_credits_since = openai_credits_since
@@ -119,6 +130,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._deepseek_model: MetricCardModel | None = None
         self._mimo_model: MetricCardModel | None = None
         self._claude_model: MetricCardModel | None = None
+        self._kiro_model: MetricCardModel | None = None
         self._openai_model: MetricCardModel | None = None
 
         self._layout = QtWidgets.QHBoxLayout(self)
@@ -132,6 +144,12 @@ class CodexUsageWidget(QtWidgets.QWidget):
             title="Claude Code",
             primary_label="Janela de 5 horas",
             secondary_label="Janela semanal",
+            parent=self,
+        )
+        self._kiro_card = MetricCard(
+            title="Kiro",
+            primary_label="Créditos restantes",
+            secondary_label="Créditos usados",
             parent=self,
         )
         self._deepseek_card = MetricCard(
@@ -265,6 +283,8 @@ class CodexUsageWidget(QtWidgets.QWidget):
             mimo_chrome_profile=self._mimo_chrome_profile,
             mimo_base_url=self._mimo_base_url,
             claude_chrome_profile=self._claude_chrome_profile,
+            kiro_token_db=self._kiro_token_db,
+            kiro_base_url=self._kiro_base_url,
             openai_admin_key=self._openai_admin_key,
             openai_credits_purchased=self._openai_credits_purchased,
             openai_credits_since=self._openai_credits_since,
@@ -280,6 +300,8 @@ class CodexUsageWidget(QtWidgets.QWidget):
         self._worker.mimo_failed.connect(self._handle_mimo_failed)
         self._worker.claude_loaded.connect(self._handle_claude_loaded)
         self._worker.claude_failed.connect(self._handle_claude_failed)
+        self._worker.kiro_loaded.connect(self._handle_kiro_loaded)
+        self._worker.kiro_failed.connect(self._handle_kiro_failed)
         self._worker.openai_loaded.connect(self._handle_openai_loaded)
         self._worker.openai_failed.connect(self._handle_openai_failed)
         self._worker.finished.connect(self._stop_worker)
@@ -324,6 +346,16 @@ class CodexUsageWidget(QtWidgets.QWidget):
     @QtCore.pyqtSlot(str)
     def _handle_claude_failed(self, message: str) -> None:
         self._claude_card.set_error(message)
+
+    @QtCore.pyqtSlot(object)
+    def _handle_kiro_loaded(self, model: MetricCardModel) -> None:
+        self._kiro_model = model
+        self._kiro_card.set_model(model)
+        self._update_badge()
+
+    @QtCore.pyqtSlot(str)
+    def _handle_kiro_failed(self, message: str) -> None:
+        self._kiro_card.set_error(message)
 
     @QtCore.pyqtSlot(object)
     def _handle_openai_loaded(self, model: MetricCardModel) -> None:
@@ -542,9 +574,20 @@ class CodexUsageWidget(QtWidgets.QWidget):
             if self._claude_model is not None
             else "—"
         )
+        kiro = (
+            self._kiro_model.primary_value.replace(" restantes", "")
+            if self._kiro_model is not None
+            else "—"
+        )
         deepseek = self._deepseek_model.primary_value if self._deepseek_model is not None else "—"
         mimo = self._mimo_model.primary_value if self._mimo_model is not None else "—"
-        self._badge.set_metrics(codex=codex, claude=claude, deepseek=deepseek, mimo=mimo)
+        self._badge.set_metrics(
+            codex=codex,
+            claude=claude,
+            kiro=kiro,
+            deepseek=deepseek,
+            mimo=mimo,
+        )
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -586,6 +629,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
         return (
             self._codex_card,
             self._claude_card,
+            self._kiro_card,
             self._deepseek_card,
             self._mimo_card,
             self._openai_card,
@@ -651,7 +695,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
 
 class CollapsedBadge(QtWidgets.QFrame):
     MIN_WIDTH = 300
-    MIN_HEIGHT = 132
+    MIN_HEIGHT = 190
 
     clicked = QtCore.pyqtSignal()
     moved = QtCore.pyqtSignal()
@@ -666,7 +710,7 @@ class CollapsedBadge(QtWidgets.QFrame):
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
 
         grid = QtWidgets.QGridLayout(self)
-        for index, key in enumerate(("Codex", "Claude", "DeepSeek", "MiMo")):
+        for index, key in enumerate(("Codex", "Claude", "Kiro", "DeepSeek", "MiMo")):
             row, column = divmod(index, 2)
             box = QtWidgets.QVBoxLayout()
             box.setSpacing(1)
@@ -686,11 +730,13 @@ class CollapsedBadge(QtWidgets.QFrame):
         *,
         codex: str,
         claude: str,
+        kiro: str,
         deepseek: str,
         mimo: str,
     ) -> None:
         self._values["Codex"].setText(codex)
         self._values["Claude"].setText(claude)
+        self._values["Kiro"].setText(kiro)
         self._values["DeepSeek"].setText(deepseek)
         self._values["MiMo"].setText(mimo)
 
@@ -1192,6 +1238,8 @@ class UsageFetchWorker(QtCore.QObject):
     mimo_failed = QtCore.pyqtSignal(str)
     claude_loaded = QtCore.pyqtSignal(object)
     claude_failed = QtCore.pyqtSignal(str)
+    kiro_loaded = QtCore.pyqtSignal(object)
+    kiro_failed = QtCore.pyqtSignal(str)
     openai_loaded = QtCore.pyqtSignal(object)
     openai_failed = QtCore.pyqtSignal(str)
     finished = QtCore.pyqtSignal()
@@ -1208,6 +1256,8 @@ class UsageFetchWorker(QtCore.QObject):
         mimo_chrome_profile: str | None,
         mimo_base_url: str,
         claude_chrome_profile: str | None,
+        kiro_token_db,
+        kiro_base_url: str,
         openai_admin_key: str | None,
         openai_credits_purchased: Decimal | None,
         openai_credits_since,
@@ -1223,6 +1273,8 @@ class UsageFetchWorker(QtCore.QObject):
         self._mimo_chrome_profile = mimo_chrome_profile
         self._mimo_base_url = mimo_base_url
         self._claude_chrome_profile = claude_chrome_profile
+        self._kiro_token_db = kiro_token_db
+        self._kiro_base_url = kiro_base_url
         self._openai_admin_key = openai_admin_key
         self._openai_credits_purchased = openai_credits_purchased
         self._openai_credits_since = openai_credits_since
@@ -1235,6 +1287,7 @@ class UsageFetchWorker(QtCore.QObject):
             self._run_deepseek,
             self._run_mimo,
             self._run_claude,
+            self._run_kiro,
             self._run_openai,
         )
         try:
@@ -1284,6 +1337,16 @@ class UsageFetchWorker(QtCore.QObject):
             self.claude_loaded.emit(build_claude_card(usage))
         except ClaudeUsageError as exc:
             self.claude_failed.emit(str(exc))
+
+    def _run_kiro(self) -> None:
+        try:
+            usage = load_kiro_usage(
+                token_db=self._kiro_token_db,
+                base_url=self._kiro_base_url,
+            )
+            self.kiro_loaded.emit(build_kiro_card(usage))
+        except KiroUsageError as exc:
+            self.kiro_failed.emit(str(exc))
 
     def _run_openai(self) -> None:
         try:

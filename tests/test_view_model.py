@@ -1,9 +1,11 @@
 import unittest
 from datetime import datetime
+from decimal import Decimal
 
 from codex_widget.claude import ClaudeUsage, ClaudeWindow
+from codex_widget.kiro import KiroUsage
 from codex_widget.usage import CodexUsage, UsageWindow
-from codex_widget.view_model import build_claude_card, build_codex_card
+from codex_widget.view_model import build_claude_card, build_codex_card, build_kiro_card
 
 
 def _usage(
@@ -94,6 +96,59 @@ class ClaudeCardBarTests(unittest.TestCase):
 
         self.assertIsNone(card.primary_percent)
         self.assertEqual(card.secondary_percent, 0)
+
+
+class KiroCardTests(unittest.TestCase):
+    def _usage(self, **overrides: object) -> KiroUsage:
+        values: dict[str, object] = {
+            "plan": "KIRO POWER",
+            "resource": "Credits",
+            "used": Decimal("176.64"),
+            "limit": Decimal("10000"),
+            "overage_enabled": False,
+            "overage_used": Decimal("0"),
+            "overage_cap": Decimal("2500"),
+            "overage_charges": Decimal("0"),
+            "currency": "USD",
+            "next_reset": 1_800_000_000,
+        }
+        values.update(overrides)
+        return KiroUsage(**values)  # type: ignore[arg-type]
+
+    def test_shows_remaining_credits_with_a_bar(self) -> None:
+        card = build_kiro_card(self._usage())
+
+        self.assertEqual(card.title, "Kiro")
+        self.assertEqual(card.primary_label, "Créditos restantes")
+        self.assertEqual(card.primary_value, "98% restantes")
+        self.assertEqual(card.primary_percent, 98)
+        self.assertEqual(card.secondary_label, "Créditos usados")
+        self.assertEqual(card.secondary_value, "176,6 de 10.000")
+        self.assertIsNone(card.secondary_percent)
+        self.assertEqual(card.detail_text, "Plano KIRO POWER")
+        self.assertTrue(card.available)
+
+        reset = datetime.fromtimestamp(1_800_000_000).astimezone()
+        self.assertEqual(card.footnote, f"Renova em {reset:%d/%m/%Y} · excedente desativado")
+
+    def test_reports_exhausted_credits_as_unavailable(self) -> None:
+        card = build_kiro_card(self._usage(used=Decimal("10000")))
+
+        self.assertEqual(card.primary_value, "0% restantes")
+        self.assertEqual(card.primary_percent, 0)
+        self.assertFalse(card.available)
+
+    def test_describes_the_overage_when_enabled(self) -> None:
+        card = build_kiro_card(
+            self._usage(
+                overage_enabled=True,
+                overage_used=Decimal("12.5"),
+                overage_charges=Decimal("0.5"),
+            )
+        )
+
+        self.assertIn("excedente 12,5 de 2.500", card.footnote)
+        self.assertIn("US$ 0,50", card.footnote)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from .claude import ClaudeUsage, ClaudeWindow
 from .deepseek import DeepSeekBalance, SpendSnapshot, format_money
+from .kiro import KiroUsage
 from .mimo import MiMoSnapshot
 from .openai_costs import OpenAICosts
 from .usage import CodexUsage, UsageWindow
@@ -179,6 +180,44 @@ def build_claude_card(usage: ClaudeUsage) -> MetricCardModel:
         footnote=_claude_resets(usage),
         available=usage.five_hour is not None or usage.seven_day is not None,
     )
+
+
+def build_kiro_card(usage: KiroUsage) -> MetricCardModel:
+    percent = usage.percent_remaining
+    footnote_parts: list[str] = []
+    if usage.next_reset is not None:
+        reset = datetime.fromtimestamp(usage.next_reset).astimezone()
+        footnote_parts.append(f"Renova em {reset:%d/%m/%Y}")
+    if usage.overage_enabled:
+        overage = (
+            f"excedente {_credits(usage.overage_used)} de {_credits(usage.overage_cap)}"
+            f" · {format_money(usage.overage_charges, usage.currency)}"
+        )
+    else:
+        overage = "excedente desativado"
+    footnote_parts.append(overage)
+
+    return MetricCardModel(
+        title="Kiro",
+        primary_label="Créditos restantes",
+        primary_value=f"{percent}% restantes",
+        primary_percent=percent,
+        secondary_label="Créditos usados",
+        secondary_value=f"{_credits(usage.used)} de {_credits(usage.limit)}",
+        detail_text=f"Plano {usage.plan}" if usage.plan else "Assinatura Kiro",
+        footnote=" · ".join(footnote_parts),
+        available=percent > 0,
+    )
+
+
+def _credits(value: Decimal) -> str:
+    quantized = value.quantize(Decimal("0.1"))
+    if quantized == quantized.to_integral_value():
+        text = f"{int(quantized):,}".replace(",", ".")
+    else:
+        text = f"{quantized:,.1f}".replace(",", "@").replace(".", ",").replace("@", ".")
+    return text
+
 
 
 def _claude_window_percent(window: ClaudeWindow | None) -> int | None:

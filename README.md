@@ -4,7 +4,7 @@
 
 # Codex Widget
 
-Codex Widget is a small floating desktop widget for monitoring your Codex usage limits and your DeepSeek, MiMo and Claude Code balances. It shows the **short usage window** (the 5-hour window today) and the **weekly usage window** exposed by the ChatGPT/Codex account usage endpoint, plus **DeepSeek**, **MiMo** and **Claude Code** cards with saldo/gasto and subscription usage.
+Codex Widget is a small floating desktop widget for monitoring your Codex usage limits and your Kiro, DeepSeek, MiMo and Claude Code balances. It shows the **short usage window** (the 5-hour window today) and the **weekly usage window** exposed by the ChatGPT/Codex account usage endpoint, plus **Claude Code**, **Kiro**, **DeepSeek**, **MiMo** and **OpenAI** cards with subscription usage, credits and saldo/gasto.
 
 > [!NOTE]
 > OpenAI restored the short Codex usage window. The widget labels that card from `limit_window_seconds`, so a 5-hour window reads "Limite de uso de 5 horas" and any future 6-hour window reads "Limite de uso de 6 horas" without code changes.
@@ -28,6 +28,7 @@ The widget stays on top of the desktop and can be dragged anywhere.
 - DeepSeek balance and tracked-spend card
 - MiMo balance and total-spend card (Chrome session)
 - Claude Code card with the 5-hour and weekly subscription windows
+- Kiro CLI credit usage card (credits left, used and renewal date)
 - OpenAI organization spend card (Admin key), with optional credit balance
 - Vertical layout by default, with persisted orientation and size
 - Collapsible compact badge with the key numbers
@@ -126,6 +127,21 @@ Cookie: <Chrome session cookies>
 
 The widget selects the organization with the `chat` capability, then displays the remaining percentages and reset times from `five_hour` and `seven_day`. The plan comes from that organization's rate-limit tier. If the session expires, sign in at `https://claude.ai` in Chrome. Use `--claude-chrome-profile` when the desired session is not in the automatically selected Chrome profile. The widget does not read or rewrite `~/.claude/.credentials.json`.
 
+## How the Kiro Card Works
+
+The Kiro card reuses the Kiro CLI login. It reads the bearer token stored by `kiro-cli` in `~/.local/share/kiro-cli/data.sqlite3` (table `auth_kv`, key `kirocli:odic:token`, opened read-only) and calls:
+
+```http
+POST https://codewhisperer.us-east-1.amazonaws.com/
+X-Amz-Target: AmazonCodeWhispererService.GetUsageLimits
+Content-Type: application/x-amz-json-1.0
+Authorization: Bearer <kiro-cli access token>
+```
+
+From `usageBreakdownList` it takes the `CREDIT` entry and shows the remaining percentage with a bar, `currentUsageWithPrecision` of `usageLimitWithPrecision` (for example `176,6 de 10.000`), the plan from `subscriptionInfo.subscriptionTitle` and the renewal date from `nextDateReset`. When overage is enabled, the footnote shows the consumed overage, its cap and the charges so far.
+
+The widget never refreshes or rewrites the Kiro token, because the SSO refresh token rotates and that would invalidate the CLI's own session. The token is renewed whenever you use `kiro-cli`; if it has expired the card reads `Sessão do Kiro expirada, rode kiro-cli login`.
+
 ## How the OpenAI Card Works
 
 The OpenAI card reads organization costs from the Admin API:
@@ -186,6 +202,7 @@ Set `CODEX_WIDGET_CONFIG=/path/to/config.json` (or `--config-file`) to use anoth
 - DeepSeek API key in `~/.env`, `DEEPSEEK_API_KEY` or `~/.config/codex-widget/config.json` for the DeepSeek card
 - Google Chrome logged in at `https://platform.xiaomimimo.com` for the MiMo card
 - Google Chrome logged in at `https://claude.ai` for the Claude Code card
+- Kiro CLI logged in (`kiro-cli login`) for the Kiro credits card
 - OpenAI Admin key in `~/.env` (`OPENAI_ADMIN_API_KEY`), the environment or the config file, for the OpenAI card
 - GNOME Keyring (libsecret) holding the Chrome Safe Storage key
 - PyQt6
@@ -342,6 +359,7 @@ src/codex_widget/deepseek.py   DeepSeek balance fetcher and spend ledger
 src/codex_widget/chrome_cookies.py  Chrome cookie database reader/decryptor
 src/codex_widget/mimo.py       MiMo console API client
 src/codex_widget/claude.py     Claude browser-session usage client
+src/codex_widget/kiro.py       Kiro CLI credit usage client
 src/codex_widget/openai_costs.py  OpenAI Admin API costs client
 src/codex_widget/ui_state.py   Persisted layout, size and collapsed state
 src/codex_widget/view_model.py Usage formatting for the UI
@@ -356,6 +374,7 @@ src/codex_widget/widget.py     PyQt6 floating widget
 - The DeepSeek API key is only sent to `https://api.deepseek.com/user/balance`.
 - MiMo session cookies are decrypted locally with the Chrome Safe Storage key from the GNOME Keyring and are only sent to `https://platform.xiaomimimo.com`.
 - Claude session cookies are sent only to `https://claude.ai`; the widget never reads or writes Claude Code OAuth tokens.
+- The Kiro token is read from the Kiro CLI database in read-only mode and is only sent to `https://codewhisperer.us-east-1.amazonaws.com`; the widget never writes to that database.
 - `~/.env` is read only for the specific credential names the widget needs; other secrets in that file are ignored and never logged.
 - The OpenAI Admin key is only sent to `https://api.openai.com/v1/organization/costs` and is read-only for usage data.
 - The spend ledger contains balances and inferred spend only (`~/.local/state/codex-widget/deepseek-spend.json`).
@@ -363,4 +382,4 @@ src/codex_widget/widget.py     PyQt6 floating widget
 - The config file (`~/.config/codex-widget/config.json`) stores API keys in plain text; keep it at mode `600` and out of version control.
 - If usage or balance fetching fails, the widget shows an error message instead of exposing credentials.
 
-If you suspect your local Codex credentials, DeepSeek API key, MiMo session or Claude Code session were exposed, rotate/revoke them and log in again.
+If you suspect your local Codex credentials, DeepSeek API key, MiMo session, Kiro session or Claude Code session were exposed, rotate/revoke them and log in again.
