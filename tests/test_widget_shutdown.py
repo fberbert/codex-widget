@@ -43,6 +43,20 @@ class ShutdownDuringFetchTests(unittest.TestCase):
                 self.assertEqual(widget._retired_threads, [])
                 self.app.processEvents()
 
+    def test_close_absorbs_keyboard_interrupt_while_a_fetch_is_stopping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            widget = CodexUsageWidget(
+                auth_file=root / "missing-auth.json",
+                base_url="http://127.0.0.1:1",
+                ui_state_file=root / "ui.json",
+                deepseek_state_file=root / "deepseek.json",
+            )
+            with patch.object(CodexUsageWidget, "_join_retired_threads", side_effect=KeyboardInterrupt):
+                widget.close()
+            self.assertTrue(widget._closing)
+            self.app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()

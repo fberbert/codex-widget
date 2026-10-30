@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from .claude import ClaudeUsage, ClaudeWindow
+from .cursor_usage import CursorUsage
 from .deepseek import DeepSeekBalance, SpendSnapshot, format_money
 from .kiro import KiroUsage
 from .mimo import MiMoSnapshot
@@ -180,6 +181,46 @@ def build_claude_card(usage: ClaudeUsage) -> MetricCardModel:
         footnote=_claude_resets(usage),
         available=usage.five_hour is not None or usage.seven_day is not None,
     )
+
+
+def build_cursor_card(usage: CursorUsage) -> MetricCardModel:
+    total_remaining = _remaining_percent(usage.total_percent_used)
+    api_remaining = _remaining_percent(usage.api_percent_used)
+    detail = f"Plano {usage.plan}" if usage.plan else "Uso do Cursor"
+    return MetricCardModel(
+        title="Cursor",
+        primary_label="Uso do plano",
+        primary_value=_percent_text(total_remaining),
+        primary_percent=total_remaining,
+        secondary_label="Uso da API",
+        secondary_value=_percent_text(api_remaining),
+        secondary_percent=api_remaining,
+        detail_text=detail,
+        footnote=_cursor_footnote(usage),
+        available=total_remaining is not None and total_remaining > 0,
+    )
+
+
+def _remaining_percent(percent_used: float | None) -> int | None:
+    if percent_used is None:
+        return None
+    return max(0, min(100, int(round(100 - percent_used))))
+
+
+def _percent_text(percent: int | None) -> str:
+    return "Indisponível" if percent is None else f"{percent}% restantes"
+
+
+def _cursor_footnote(usage: CursorUsage) -> str:
+    spent = Decimal(usage.spent_cents) / Decimal(100)
+    parts = [format_money(spent, "USD")]
+    if usage.limit_cents is not None:
+        limit = Decimal(usage.limit_cents) / Decimal(100)
+        parts[0] = f"{parts[0]} de {format_money(limit, 'USD')}"
+    if usage.cycle_end is not None:
+        renewal = datetime.fromtimestamp(usage.cycle_end).astimezone()
+        parts.append(f"renova {renewal:%d/%m}")
+    return " · ".join(parts)
 
 
 def build_kiro_card(usage: KiroUsage) -> MetricCardModel:

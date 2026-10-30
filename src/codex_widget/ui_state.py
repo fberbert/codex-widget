@@ -23,6 +23,8 @@ class WidgetUiState:
     screen_name: str | None = None
     offset_x: int | None = None
     offset_y: int | None = None
+    width: int | None = None
+    active_only: bool = False
 
 
 def load_ui_state(path: Path = DEFAULT_STATE_FILE) -> WidgetUiState:
@@ -41,6 +43,8 @@ def load_ui_state(path: Path = DEFAULT_STATE_FILE) -> WidgetUiState:
         screen_name=name if isinstance(name, str) and name else None,
         offset_x=_coordinate(data.get("offset_x")),
         offset_y=_coordinate(data.get("offset_y")),
+        width=_width(data.get("width")),
+        active_only=data.get("active_only") is True,
     )
 
 
@@ -57,6 +61,8 @@ def save_ui_state(state: WidgetUiState, path: Path = DEFAULT_STATE_FILE) -> None
                 "screen_name": state.screen_name,
                 "offset_x": state.offset_x,
                 "offset_y": state.offset_y,
+                "width": state.width,
+                "active_only": state.active_only,
             },
             indent=2,
         ),
@@ -67,6 +73,12 @@ def save_ui_state(state: WidgetUiState, path: Path = DEFAULT_STATE_FILE) -> None
 
 def _coordinate(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _width(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
 
 
 def _scale(value: Any) -> float | None:
