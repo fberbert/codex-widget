@@ -72,6 +72,7 @@ class CardLayoutTests(unittest.TestCase):
     def _load_all(self, *, usage: MetricCardModel = USAGE, balance: MetricCardModel = BALANCE) -> None:
         self.widget._handle_usage_loaded(usage)
         self.widget._handle_claude_loaded(usage)
+        self.widget._handle_cursor_loaded(usage)
         self.widget._handle_kiro_loaded(usage)
         self.widget._handle_deepseek_loaded(balance)
         self.widget._handle_mimo_loaded(balance)
@@ -84,7 +85,12 @@ class CardLayoutTests(unittest.TestCase):
     def test_balance_cards_are_shorter_than_usage_cards(self) -> None:
         self._load_all()
 
-        for usage_card in (self.widget._codex_card, self.widget._claude_card, self.widget._kiro_card):
+        for usage_card in (
+            self.widget._codex_card,
+            self.widget._claude_card,
+            self.widget._cursor_card,
+            self.widget._kiro_card,
+        ):
             for balance_card in (
                 self.widget._deepseek_card,
                 self.widget._mimo_card,

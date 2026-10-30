@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 from decimal import Decimal, InvalidOperation
 from datetime import date
 from pathlib import Path
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from .config import default_config_path, load_config
+from .desktop import ensure_desktop_integration, find_icon, load_window_icon, running_executable
+from .layer_shell import use_layer_shell
 from .deepseek import (
     DEFAULT_BASE_URL as DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_STATE_FILE as DEFAULT_DEEPSEEK_STATE_FILE,
@@ -77,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Data (AAAA-MM-DD) a partir da qual o custo é somado para o saldo da OpenAI.",
     )
     args = parser.parse_args(argv)
+    use_layer_shell()
 
     config = load_config(args.config_file)
     deepseek_api_key = (
@@ -115,6 +119,16 @@ def main(argv: list[str] | None = None) -> int:
     openai_credits_since = args.openai_credits_since or config.openai_credits_since
 
     app = QtWidgets.QApplication(sys.argv[:1])
+    app.setApplicationName("codex-widget")
+    app.setApplicationDisplayName("Codex Widget")
+    app.setDesktopFileName("codex-widget")
+    try:
+        ensure_desktop_integration(executable=running_executable(), icon=find_icon())
+    except OSError:
+        pass
+    icon = load_window_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     widget = CodexUsageWidget(
         auth_file=args.auth_file,
         base_url=args.base_url,
@@ -129,8 +143,33 @@ def main(argv: list[str] | None = None) -> int:
         openai_credits_purchased=openai_credits_purchased,
         openai_credits_since=openai_credits_since,
     )
+    _install_interrupt_handler(app)
     widget.show()
     return app.exec()
+
+
+def _install_interrupt_handler(app: QtWidgets.QApplication) -> None:
+    """Quit from Ctrl+C without raising inside a Qt slot.
+
+    ``QApplication.exec`` runs in C++, so the interpreter only notices the
+    signal when a Python callback runs. The pulse timer provides that callback.
+    A second Ctrl+C exits immediately: destroying a running fetch thread aborts
+    the process.
+    """
+
+    interrupts = {"count": 0}
+
+    def handle_sigint(*_args: object) -> None:
+        interrupts["count"] += 1
+        if interrupts["count"] > 1:
+            os._exit(0)
+        app.quit()
+
+    signal.signal(signal.SIGINT, handle_sigint)
+    pulse = QtCore.QTimer(app)
+    pulse.setInterval(200)
+    pulse.timeout.connect(lambda: None)
+    pulse.start()
 
 
 if __name__ == "__main__":
