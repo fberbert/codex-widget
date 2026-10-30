@@ -33,7 +33,8 @@ The widget stays on top of the desktop and can be dragged anywhere.
 - Vertical layout by default, with persisted orientation and size
 - Collapsible compact badge with the key numbers
 - Click a card to open an enlarged copy next to the panel
-- Progress bars under each usage percentage (Codex and Claude Code)
+- Compact cards: usage cards (Codex, Claude Code, Kiro) carry progress bars under each percentage; balance cards (DeepSeek, MiMo, OpenAI) use a shorter one-line layout
+- Plan or balance details next to each card title and a colored availability dot (hover for the text); text that does not fit is elided and shown in full as a tooltip
 - Reset times for both windows in the card footnote
 - Keyboard resizing for compact desktop placement
 - Uses the existing Codex login from `~/.codex/auth.json`

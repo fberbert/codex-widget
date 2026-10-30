@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from decimal import Decimal
 from typing import Optional
 
@@ -58,6 +59,7 @@ MIN_SCALE = 0.45
 MAX_SCALE = 1.8
 SCALE_STEP = 0.1
 THREAD_JOIN_TIMEOUT_MS = 25_000
+CARD_SPACING = 12
 
 
 def _clamp_scale(value: float) -> float:
@@ -138,18 +140,21 @@ class CodexUsageWidget(QtWidgets.QWidget):
             title="Codex",
             primary_label="Janela de 5 horas",
             secondary_label="Janela semanal",
+            bars=True,
             parent=self,
         )
         self._claude_card = MetricCard(
             title="Claude Code",
             primary_label="Janela de 5 horas",
             secondary_label="Janela semanal",
+            bars=True,
             parent=self,
         )
         self._kiro_card = MetricCard(
             title="Kiro",
             primary_label="Créditos restantes",
             secondary_label="Créditos usados",
+            bars=True,
             parent=self,
         )
         self._deepseek_card = MetricCard(
@@ -473,7 +478,9 @@ class CodexUsageWidget(QtWidgets.QWidget):
         if screen is None:
             return True
         card_count = len(self._metric_cards())
-        needed = (498 * card_count + 20 * (card_count - 1) + 32) * self._scale
+        needed = (
+            MetricCard.MIN_WIDTH * card_count + CARD_SPACING * (card_count - 1) + 32
+        ) * self._scale
         if self._orientation_locked:
             return True
         return needed <= screen.availableGeometry().width() - 20
@@ -481,7 +488,7 @@ class CodexUsageWidget(QtWidgets.QWidget):
     def _apply_scale(self) -> None:
         margin_h = int(round(16 * self._scale))
         margin_v = int(round(10 * self._scale))
-        spacing = int(round(20 * self._scale))
+        spacing = int(round(CARD_SPACING * self._scale))
         self._layout.setContentsMargins(margin_h, margin_v, margin_h, margin_v)
 
         if self._collapsed:
@@ -509,26 +516,17 @@ class CodexUsageWidget(QtWidgets.QWidget):
         )
         self._layout.setDirection(direction)
         self._layout.setSpacing(spacing)
-        for card in self._metric_cards():
+        cards = self._metric_cards()
+        for card in cards:
             card.apply_scale(self._scale)
             card.show()
-        card_count = len(self._metric_cards())
+        gaps = spacing * (len(cards) - 1)
         if horizontal:
-            width = int(
-                round(
-                    (MetricCard.MIN_WIDTH * card_count + 20 * (card_count - 1) + 32)
-                    * self._scale
-                )
-            )
-            height = int(round((MetricCard.MIN_HEIGHT + 20) * self._scale))
+            width = sum(card.minimumWidth() for card in cards) + gaps + 2 * margin_h
+            height = max(card.minimumHeight() for card in cards) + 2 * margin_v
         else:
-            width = int(round((MetricCard.MIN_WIDTH + 32) * self._scale))
-            height = int(
-                round(
-                    (MetricCard.MIN_HEIGHT * card_count + 20 * (card_count - 1) + 20)
-                    * self._scale
-                )
-            )
+            width = max(card.minimumWidth() for card in cards) + 2 * margin_h
+            height = sum(card.minimumHeight() for card in cards) + gaps + 2 * margin_v
         self.setMinimumSize(width, height)
         self.resize(width, height)
         self.adjustSize()
@@ -818,9 +816,57 @@ class CollapsedBadge(QtWidgets.QFrame):
         super().mouseReleaseEvent(event)
 
 
+class ElidedLabel(QtWidgets.QLabel):
+    """Single-line label that elides its text instead of widening the card."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self._full_text = ""
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self.updateGeometry()
+        self._refresh()
+
+    def sizeHint(self) -> QtCore.QSize:  # noqa: N802
+        # Glyph advances are fractional; round up so the full text never elides at its own hint.
+        margins = self.contentsMargins()
+        advance = QtGui.QFontMetricsF(self.font()).horizontalAdvance(self._full_text)
+        width = math.ceil(advance) + 1 + margins.left() + margins.right()
+        return QtCore.QSize(width, super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QtCore.QSize:  # noqa: N802
+        return QtCore.QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh()
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event is not None and event.type() == QtCore.QEvent.Type.FontChange:
+            self.updateGeometry()
+            self._refresh()
+
+    def _refresh(self) -> None:
+        elided = self.fontMetrics().elidedText(
+            self._full_text,
+            QtCore.Qt.TextElideMode.ElideRight,
+            max(0, self.contentsRect().width()),
+        )
+        self.setToolTip(self._full_text if elided != self._full_text else "")
+        self.setText(elided)
+
+
 class MetricCard(QtWidgets.QFrame):
+    """Provider card; usage cards carry bars, balance cards use a shorter layout."""
+
     MIN_WIDTH = 498
-    MIN_HEIGHT = 228
+    USAGE_HEIGHT = 128
+    BALANCE_HEIGHT = 100
 
     clicked = QtCore.pyqtSignal()
     moved = QtCore.pyqtSignal()
@@ -832,12 +878,14 @@ class MetricCard(QtWidgets.QFrame):
         title: str,
         primary_label: str,
         secondary_label: str,
+        bars: bool = False,
         interactive: bool = True,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._scale = 1.0
         self._state: tuple[str, object] = ("loading", None)
+        self._bars = bars
         self._interactive = interactive
         self._drag_offset: QtCore.QPoint | None = None
         self._press_position: QtCore.QPoint | None = None
@@ -849,14 +897,14 @@ class MetricCard(QtWidgets.QFrame):
         self._default_secondary_label = secondary_label
         self._title = QtWidgets.QLabel(title)
         self._status = QtWidgets.QLabel()
-        self._primary_caption = QtWidgets.QLabel(primary_label)
+        self._primary_caption = ElidedLabel()
         self._primary_value = QtWidgets.QLabel("—")
-        self._secondary_caption = QtWidgets.QLabel(secondary_label)
+        self._secondary_caption = ElidedLabel()
         self._secondary_value = QtWidgets.QLabel("—")
-        self._primary_bar = QtWidgets.QProgressBar()
-        self._secondary_bar = QtWidgets.QProgressBar()
-        self._detail = QtWidgets.QLabel()
-        self._footnote = QtWidgets.QLabel()
+        self._primary_bar = QtWidgets.QProgressBar(self)
+        self._secondary_bar = QtWidgets.QProgressBar(self)
+        self._detail = ElidedLabel()
+        self._footnote = ElidedLabel()
 
         self._title.setObjectName("title")
         self._status.setObjectName("status")
@@ -871,66 +919,80 @@ class MetricCard(QtWidgets.QFrame):
             bar.hide()
         self._detail.setObjectName("detail")
         self._footnote.setObjectName("footnote")
-        self._detail.setWordWrap(True)
-        self._footnote.setWordWrap(True)
+        self._primary_caption.set_full_text(primary_label)
+        self._secondary_caption.set_full_text(secondary_label)
 
-        header = QtWidgets.QHBoxLayout()
-        header.addWidget(self._title)
-        header.addStretch(1)
-        header.addWidget(self._status)
+        # Header: title, plan/detail line and the availability dot share one row.
+        self._header = QtWidgets.QHBoxLayout()
+        self._header.addWidget(self._title, 0, QtCore.Qt.AlignmentFlag.AlignBaseline)
+        self._header.addWidget(self._detail, 1, QtCore.Qt.AlignmentFlag.AlignBaseline)
+        self._header.addWidget(self._status, 0, QtCore.Qt.AlignmentFlag.AlignBaseline)
 
-        metrics = QtWidgets.QHBoxLayout()
+        # Usage cards stack caption/value/bar; balance cards keep caption and value on one line.
+        self._metrics = QtWidgets.QHBoxLayout()
+        self._columns: list[QtWidgets.QBoxLayout] = []
         for caption, value, bar in (
             (self._primary_caption, self._primary_value, self._primary_bar),
             (self._secondary_caption, self._secondary_value, self._secondary_bar),
         ):
-            column = QtWidgets.QVBoxLayout()
-            column.setSpacing(2)
-            column.addWidget(caption)
-            column.addWidget(value)
-            column.addWidget(bar)
-            metrics.addLayout(column, 1)
+            if bars:
+                column: QtWidgets.QBoxLayout = QtWidgets.QVBoxLayout()
+                column.addWidget(caption)
+                column.addWidget(value)
+                column.addWidget(bar)
+            else:
+                column = QtWidgets.QHBoxLayout()
+                column.addWidget(caption, 0, QtCore.Qt.AlignmentFlag.AlignBaseline)
+                column.addWidget(value, 0, QtCore.Qt.AlignmentFlag.AlignBaseline)
+                column.addStretch(1)
+            self._columns.append(column)
+            self._metrics.addLayout(column, 1)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addLayout(header)
-        layout.addSpacing(6)
-        layout.addLayout(metrics)
+        layout.addLayout(self._header)
+        layout.addLayout(self._metrics)
         layout.addStretch(1)
-        layout.addWidget(self._detail)
         layout.addWidget(self._footnote)
 
         self.apply_scale(1.0)
+
+    def has_bars(self) -> bool:
+        return self._bars
+
+    def base_height(self) -> int:
+        return self.USAGE_HEIGHT if self._bars else self.BALANCE_HEIGHT
 
     def apply_scale(self, scale: float) -> None:
         self._scale = scale
         layout = self.layout()
         if isinstance(layout, QtWidgets.QVBoxLayout):
-            layout.setContentsMargins(
-                int(round(32 * scale)),
-                int(round(24 * scale)),
-                int(round(32 * scale)),
-                int(round(24 * scale)),
-            )
-            layout.setSpacing(int(round(10 * scale)))
+            horizontal = int(round(24 * scale))
+            vertical = int(round(14 * scale))
+            layout.setContentsMargins(horizontal, vertical, horizontal, vertical)
+            layout.setSpacing(int(round(6 * scale)))
+        self._header.setSpacing(int(round(10 * scale)))
+        self._metrics.setSpacing(int(round(16 * scale)))
+        for column in self._columns:
+            column.setSpacing(int(round((2 if self._bars else 6) * scale)))
         for bar in (self._primary_bar, self._secondary_bar):
-            bar.setFixedHeight(max(6, int(round(12 * scale))))
+            bar.setFixedHeight(max(4, int(round(10 * scale))))
         self.setMinimumSize(
             int(round(MetricCard.MIN_WIDTH * scale)),
-            int(round(MetricCard.MIN_HEIGHT * scale)),
+            int(round(self.base_height() * scale)),
         )
         self._apply_style()
 
     def set_model(self, model: MetricCardModel) -> None:
         self._state: tuple[str, object] = ("model", model)
         self._title.setText(model.title)
-        self._primary_caption.setText(model.primary_label)
+        self._primary_caption.set_full_text(model.primary_label)
         self._primary_value.setText(model.primary_value)
-        self._secondary_caption.setText(model.secondary_label)
+        self._secondary_caption.set_full_text(model.secondary_label)
         self._secondary_value.setText(model.secondary_value)
         self._set_percent(self._primary_bar, model.primary_percent)
         self._set_percent(self._secondary_bar, model.secondary_percent)
-        self._detail.setText(model.detail_text)
-        self._footnote.setText(model.footnote)
+        self._detail.set_full_text(model.detail_text)
+        self._footnote.set_full_text(model.footnote)
         self._set_status(model.available)
         self._apply_style()
         self.updated.emit()
@@ -938,15 +1000,16 @@ class MetricCard(QtWidgets.QFrame):
     def set_loading(self) -> None:
         self._state = ("loading", None)
         self._reset_defaults()
-        self._footnote.setText("Atualizando…")
+        self._footnote.set_full_text("Atualizando…")
         self._status.setText("")
+        self._status.setToolTip("")
         self._apply_style()
         self.updated.emit()
 
     def set_error(self, message: str) -> None:
         self._state = ("error", message)
         self._reset_defaults()
-        self._footnote.setText(message[:120])
+        self._footnote.set_full_text(message)
         self._set_status(False)
         self._apply_style()
         self.updated.emit()
@@ -977,36 +1040,35 @@ class MetricCard(QtWidgets.QFrame):
 
     def _reset_defaults(self) -> None:
         self._title.setText(self._default_title)
-        self._primary_caption.setText(self._default_primary_label)
-        self._secondary_caption.setText(self._default_secondary_label)
+        self._primary_caption.set_full_text(self._default_primary_label)
+        self._secondary_caption.set_full_text(self._default_secondary_label)
         self._primary_value.setText("—")
         self._secondary_value.setText("—")
         self._set_percent(self._primary_bar, None)
         self._set_percent(self._secondary_bar, None)
-        self._detail.setText("")
+        self._detail.set_full_text("")
 
     def _set_percent(self, bar: QtWidgets.QProgressBar, percent: int | None) -> None:
-        if percent is None:
+        if percent is None or not self._bars:
             bar.hide()
             return
         bar.setValue(percent)
         bar.show()
 
     def _set_status(self, available: bool) -> None:
-        if available:
-            self._status.setText('<span style="color:#22c55e;">● disponível</span>')
-        else:
-            self._status.setText('<span style="color:#f59e0b;">● indisponível</span>')
+        color, text = ("#22c55e", "disponível") if available else ("#f59e0b", "indisponível")
+        self._status.setText(f'<span style="color:{color};">●</span>')
+        self._status.setToolTip(text)
 
     def _apply_style(self) -> None:
-        radius = int(round(28 * self._scale))
-        title_size = int(round(18 * self._scale))
-        caption_size = int(round(13 * self._scale))
-        metric_size = int(round(26 * self._scale))
-        detail_size = int(round(13 * self._scale))
+        radius = int(round(22 * self._scale))
+        title_size = int(round(17 * self._scale))
+        caption_size = int(round(12 * self._scale))
+        metric_size = int(round(22 * self._scale))
+        detail_size = int(round(12 * self._scale))
         footnote_size = int(round(12 * self._scale))
-        status_size = int(round(12 * self._scale))
-        bar_radius = max(1, int(round(6 * self._scale)))
+        status_size = int(round(13 * self._scale))
+        bar_radius = max(1, int(round(5 * self._scale)))
         self.setStyleSheet(
             f"""
             QFrame {{
@@ -1125,16 +1187,23 @@ class CardDetailPopup(QtWidgets.QWidget):
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._source_title = ""
         self._source: MetricCard | None = None
-        self._card = MetricCard(
-            title="",
-            primary_label="",
-            secondary_label="",
-            interactive=False,
-            parent=self,
-        )
+        self._card = self._new_card(bars=False)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._card)
+
+    def _new_card(self, *, bars: bool) -> MetricCard:
+        return MetricCard(
+            title="",
+            primary_label="",
+            secondary_label="",
+            bars=bars,
+            interactive=False,
+            parent=self,
+        )
+
+    def has_bars(self) -> bool:
+        return self._card.has_bars()
 
     @staticmethod
     def placement(
@@ -1171,10 +1240,17 @@ class CardDetailPopup(QtWidgets.QWidget):
         self._source = card
         card.updated.connect(self._sync_from_source)
         self._source_title = card.labels()[0]
+        if self._card.has_bars() != card.has_bars():
+            replacement = self._new_card(bars=card.has_bars())
+            layout = self.layout()
+            if layout is not None:
+                layout.replaceWidget(self._card, replacement)
+            self._card.deleteLater()
+            self._card = replacement
         self._sync_from_source()
         area = self._available_area(panel)
         self._card.apply_scale(self._fitting_scale(scale, area))
-        size = self.sizeHint().expandedTo(self._card.minimumSize())
+        size = self._card.minimumSize()
         self.resize(size)
         self.move(self.placement(panel, size, area))
         self.show()
@@ -1207,7 +1283,7 @@ class CardDetailPopup(QtWidgets.QWidget):
         target = _clamp_scale(max(scale, 0.6) * 1.8)
         while target > MIN_SCALE:
             width = MetricCard.MIN_WIDTH * target
-            height = MetricCard.MIN_HEIGHT * target
+            height = self._card.base_height() * target
             if width <= area.width() - 2 * self.GAP and height <= area.height() - 2 * self.GAP:
                 break
             target = round(target - SCALE_STEP, 2)
